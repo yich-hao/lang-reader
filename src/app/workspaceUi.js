@@ -1,4 +1,5 @@
 import { initSegmentedControls, initCustomSliders, repositionAllSegmentedControls as repositionAll } from "../ui/customControls.js";
+import { createModal } from "../ui/modal.js";
 
 export function createWorkspaceUi({ state, services, elements, document, window, renderFilesPanel, saveSettings, t, beginTemporaryWordMode, endTemporaryWordMode, stopPlayback, handlePlaybackButton, moveKeyboardSelection, setKeyboardClickMode, openCurrentTranslation, cycleRepeatValue, updateActiveTableState }) {
   const MOBILE_SETTINGS_QUERY = "(max-width: 767px)";
@@ -7,7 +8,8 @@ export function createWorkspaceUi({ state, services, elements, document, window,
   let settingsSheetState = "compact";
   let settingsSheetDrag = null;
   let suppressSettingsToggleClick = false;
-  let shortcutsPreviousFocus = null;
+  const shortcutsModal = createModal({ overlay: elements.shortcutsModal,
+    content: elements.shortcutsModal.querySelector(".modal-content"), closeButton: elements.closeShortcutsButton, document });
   let isThemeListenerRegistered = false;
   let finishThemeMotion = null;
   const themeModes = ["light", "dark", "auto"];
@@ -198,24 +200,17 @@ export function createWorkspaceUi({ state, services, elements, document, window,
   }
 
   function setShortcutsModalOpen(open) {
-    if (open === !elements.shortcutsModal.hidden) return;
-    if (open) {
-      shortcutsPreviousFocus = document.activeElement;
-      elements.shortcutsModal.hidden = false;
-      elements.closeShortcutsButton.focus();
-    } else {
-      elements.shortcutsModal.hidden = true;
-      if (shortcutsPreviousFocus?.isConnected) shortcutsPreviousFocus.focus();
-      shortcutsPreviousFocus = null;
-    }
+    shortcutsModal.setOpen(open);
   }
 
   function handleKeyboardShortcut(event) {
+    if (document.querySelector(".modal-overlay:not([hidden])") && elements.shortcutsModal.hidden) return;
     if (!elements.shortcutsModal.hidden && event.key === "Escape") {
       event.preventDefault();
       setShortcutsModalOpen(false);
       return;
     }
+    if (!elements.shortcutsModal.hidden) return;
     if (services.studyController.handleKeyboard(event)) return;
     if (event.key === "Alt") {
       if (!shouldIgnoreTemporaryMode(event.target)) {
@@ -226,6 +221,12 @@ export function createWorkspaceUi({ state, services, elements, document, window,
     }
     if (shouldIgnoreKeyboardShortcut(event)) return;
     const key = event.key;
+    if (key.toLowerCase() === "f") {
+      if (!state.isParsedView || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      setSidePanelTab(state.sidePanelTab === "files" ? "settings" : "files");
+      return;
+    }
     if (key === "?") {
       event.preventDefault();
       setShortcutsModalOpen(elements.shortcutsModal.hidden);
@@ -276,7 +277,9 @@ export function createWorkspaceUi({ state, services, elements, document, window,
     const target = event.target;
     if (!target) return false;
     const tag = target.tagName;
-    return target.isContentEditable || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
+    return target.isContentEditable || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA"
+      || (["Enter", " "].includes(event.key) && (Boolean(target.closest?.("button, a[href], [role='button'], [role='checkbox']"))
+        || tag === "BUTTON" || tag === "A"));
   }
 
   function handleKeyboardKeyUp(event) {
@@ -433,14 +436,7 @@ export function createWorkspaceUi({ state, services, elements, document, window,
     elements.shortcutsHelpButton.addEventListener("click", () => {
       setShortcutsModalOpen(true);
     });
-    elements.closeShortcutsButton.addEventListener("click", () => {
-      setShortcutsModalOpen(false);
-    });
-    elements.shortcutsModal.addEventListener("click", (event) => {
-      if (event.target === elements.shortcutsModal) {
-        setShortcutsModalOpen(false);
-      }
-    });
+    shortcutsModal.bindEvents();
     document.addEventListener("keydown", handleKeyboardShortcut);
     document.addEventListener("keyup", handleKeyboardKeyUp);
     window.addEventListener("blur", endTemporaryWordMode);

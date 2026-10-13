@@ -2,7 +2,8 @@ import {
   getCurrentStudyCard,
   getStudySessionProgress,
   studySetupSize,
-  isStudySessionAtActiveCard
+  isStudySessionAtActiveCard,
+  MAX_STUDY_ANSWER_LENGTH
 } from "./session.js";
 import {
   initCustomSliders,
@@ -144,7 +145,7 @@ function renderStudySetup(setup, labels, callbacks) {
 function renderSectionSetup(setup, labels, callbacks) {
   const menu = createElement("section", "study-setup");
   menu.dataset.step = "sections";
-  const heading = renderSetupHeading(labels.selectSections, labels.step(1, 2));
+  const heading = renderSetupHeading(labels.selectSections);
   menu.append(heading);
 
   menu.append(renderProgressSummary(
@@ -229,6 +230,7 @@ function renderSectionSetup(setup, labels, callbacks) {
 
     row.addEventListener("click", handleSelect);
     row.addEventListener("keydown", (e) => {
+      if (e.target.tagName === "INPUT") return;
       if (e.key === " " || e.key === "Enter") {
         e.preventDefault();
         handleSelect(e);
@@ -262,7 +264,7 @@ function renderPracticeSetup(setup, labels, callbacks) {
   menu.dataset.step = "practice";
   const setupTitle = setup.sessionTitle
     || (setup.selectedSectionCount > 1 ? labels.selected : labels.practice);
-  menu.append(renderSetupHeading(setupTitle, labels.step(2, 2)));
+  menu.append(renderSetupHeading(setupTitle));
 
   const selectedSummary = createElement("div", "study-selected-summary");
   selectedSummary.textContent = labels.selectedCards(setup.selectedStats.cards);
@@ -303,13 +305,11 @@ function renderPracticeSetup(setup, labels, callbacks) {
   return menu;
 }
 
-function renderSetupHeading(titleText, stepText) {
+function renderSetupHeading(titleText) {
   const heading = createElement("header", "study-setup-heading");
   const title = createElement("h3");
   title.textContent = titleText;
-  const step = createElement("span", "study-step");
-  step.textContent = stepText;
-  heading.append(title, step);
+  heading.append(title);
   return heading;
 }
 
@@ -581,6 +581,7 @@ function renderPrompt(session, card, labels, callbacks) {
     const form = createElement("form", "study-dictation-form");
     const input = createElement("input", "study-dictation-input");
     input.type = "text";
+    input.maxLength = MAX_STUDY_ANSWER_LENGTH;
     input.autocomplete = "off";
     input.spellcheck = false;
     input.dir = "auto";
@@ -645,8 +646,8 @@ function renderAnswer(card, session, labels) {
 }
 
 export function renderDiffMarkup(expected, answer, options = {}) {
-  const normAns = String(answer || "").trim();
-  const normExp = String(expected || "").trim();
+  const normAns = String(answer || "").trim().slice(0, MAX_STUDY_ANSWER_LENGTH);
+  const normExp = String(expected || "").trim().slice(0, MAX_STUDY_ANSWER_LENGTH);
   if (normAns === normExp) {
     return escapeHtml(normExp);
   }
@@ -668,6 +669,16 @@ function buildCharacterDiff(expected, answer, language) {
   const left = splitGraphemes(expected, language);
   const right = splitGraphemes(answer, language);
   const lower = value => value.toLocaleLowerCase(canonicalLanguageTag(language) || undefined);
+  if ((left.length + 1) * (right.length + 1) > 250000) {
+    return Array.from({ length: Math.max(left.length, right.length) }, (_, index) => {
+      const expectedChar = left[index];
+      const actualChar = right[index];
+      if (expectedChar === undefined) return { type: "extra", expected: "", actual: actualChar };
+      if (actualChar === undefined) return { type: "missing", expected: expectedChar, actual: "" };
+      return { type: expectedChar === actualChar ? "equal" : lower(expectedChar) === lower(actualChar)
+        ? "normalized" : "substitution", expected: expectedChar, actual: actualChar };
+    });
+  }
   const matrix = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
   for (let leftIndex = 0; leftIndex <= left.length; leftIndex += 1) matrix[leftIndex][0] = leftIndex;
   for (let rightIndex = 0; rightIndex <= right.length; rightIndex += 1) matrix[0][rightIndex] = rightIndex;

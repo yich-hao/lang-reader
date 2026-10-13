@@ -1,12 +1,49 @@
 import { loadFileGroupOrder, saveFileGroupOrder } from "../core/storage.js";
-import { modifiedFileIcon, FILE_ICON_SVG, FOLDER_ICON_SVG, FILLED_FOLDER_ICON_SVG, openFolderIconSvg } from "./fileIcons.js";
+import { modifiedFileIcon, FILE_ICON_SVG, FOLDER_ICON_SVG, FILLED_FOLDER_ICON_SVG, FILES_GRIP_SVG, FILES_TRASH_SVG, openFolderIconSvg } from "./fileIcons.js";
 export function suppressTreeClick({ elapsed, dragging, cancelled, outside }) {
   return dragging || elapsed >= 1000 || cancelled || outside;
+}
+
+export function bindFilesSortGesture(row, { onMove, onFinish, ignore = () => false, gripSelector = "", suppressHeld = false }) {
+  let suppress = false;
+  row.addEventListener("click", event => {
+    if (suppress) { suppress = false; event.stopImmediatePropagation(); event.preventDefault(); }
+  });
+  row.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || !event.isPrimary || ignore(event)) return;
+    suppress = false;
+    const bounds = row.getBoundingClientRect(), started = performance.now();
+    const threshold = gripSelector && event.target.closest(gripSelector) ? 3 : bounds.height * 2 / 3;
+    const timer = setTimeout(() => row.classList.add("is-held"), 200);
+    row.setPointerCapture(event.pointerId);
+    let dragging = false;
+    const move = e => {
+      if (e.pointerId !== event.pointerId) return;
+      if (!dragging && Math.hypot(e.clientX-event.clientX,e.clientY-event.clientY) <= threshold) return;
+      dragging = true; suppress = true; clearTimeout(timer); row.classList.add("is-held");
+      onMove(e);
+    };
+    const end = e => {
+      if (e.pointerId !== event.pointerId) return;
+      clearTimeout(timer);
+      const result = { elapsed: performance.now()-started, dragging, cancelled: e.type !== "pointerup",
+        outside: e.clientX < bounds.left || e.clientX > bounds.right || e.clientY < bounds.top || e.clientY > bounds.bottom };
+      suppress = suppressTreeClick(result) || (suppressHeld && result.elapsed >= 200);
+      row.classList.remove("is-held");
+      ["pointerup","pointercancel","lostpointercapture"].forEach(type => row.removeEventListener(type,end));
+      row.removeEventListener("pointermove",move);
+      if (row.hasPointerCapture(event.pointerId)) row.releasePointerCapture(event.pointerId);
+      onFinish(e, result);
+    };
+    row.addEventListener("pointermove",move);
+    ["pointerup","pointercancel","lostpointercapture"].forEach(type => row.addEventListener(type,end));
+  });
 }
 
 export function createFilesTree({ list, emptyState, count, toolbar, onOpen, onDelete, onAdd, onClear, appearance = {}, persistOrder = true }) {
   let cleanup = () => {};
   let root;
+  let selectionRequestId = 0;
   let order = persistOrder ? loadFileGroupOrder() : [];
   const folded = new Map();
   let scrollTimer;
@@ -38,10 +75,6 @@ export function createFilesTree({ list, emptyState, count, toolbar, onOpen, onDe
     order = [...root.querySelectorAll(":scope > .source-section")].map(node => node.dataset.group);
   }
   function wireSort(heading, section) {
-    let suppress = false;
-    heading.addEventListener("click", event => {
-      if (suppress) { suppress = false; event.stopImmediatePropagation(); event.preventDefault(); }
-    });
     heading.addEventListener("keydown", event => {
       if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
@@ -53,20 +86,10 @@ export function createFilesTree({ list, emptyState, count, toolbar, onOpen, onDe
       if (persistOrder) saveFileGroupOrder(order);
       root.dispatchEvent(new Event("treechange"));
     });
-    heading.addEventListener("pointerdown", event => {
-      if (event.button !== 0 || !event.isPrimary) return;
-      suppress = false;
-      const bounds = heading.getBoundingClientRect();
-      const started = performance.now();
-      const timer = setTimeout(() => heading.classList.add("is-held"), 200);
-      heading.setPointerCapture(event.pointerId);
-      let dragging = false, target = null, after = false;
-      const clear = () => root.querySelectorAll(".drop-before,.drop-after").forEach(node => node.classList.remove("drop-before","drop-after"));
-      const move = e => {
-        if (e.pointerId !== event.pointerId) return;
-        if (!dragging && Math.hypot(e.clientX-event.clientX,e.clientY-event.clientY) <= bounds.height*2/3) return;
-        dragging = true; suppress = true; clearTimeout(timer);
-        heading.classList.add("is-held");
+    let target = null, after = false;
+    const clear = () => root.querySelectorAll(".drop-before,.drop-after").forEach(node => node.classList.remove("drop-before","drop-after"));
+    bindFilesSortGesture(heading, {
+      onMove: e => {
         root.dispatchEvent(new Event("treechange"));
         const rect = list.getBoundingClientRect();
         if (e.clientY < rect.top+35) list.scrollTop -= 18;
@@ -76,22 +99,14 @@ export function createFilesTree({ list, emptyState, count, toolbar, onOpen, onDe
         target = others.find(node => e.clientY < node.getBoundingClientRect().top+node.getBoundingClientRect().height/2) || others.at(-1);
         after = target && e.clientY >= target.getBoundingClientRect().top+target.getBoundingClientRect().height/2;
         target?.classList.add(after ? "drop-after" : "drop-before");
-      };
-      const end = e => {
-        if (e.pointerId !== event.pointerId) return;
-        clearTimeout(timer);
-        suppress = suppressTreeClick({ elapsed: performance.now()-started, dragging, cancelled: e.type !== "pointerup", outside: e.clientX < bounds.left || e.clientX > bounds.right || e.clientY < bounds.top || e.clientY > bounds.bottom });
+      },
+      onFinish: (e, { dragging }) => {
         if (dragging && target && e.type === "pointerup") root.insertBefore(section, after ? target.nextSibling : target);
-        clear(); heading.classList.remove("is-held");
-        ["pointerup","pointercancel","lostpointercapture"].forEach(type => heading.removeEventListener(type,end));
-        heading.removeEventListener("pointermove",move);
-        if (heading.hasPointerCapture(event.pointerId)) heading.releasePointerCapture(event.pointerId);
+        clear(); target = null; after = false;
         remember();
         if (persistOrder && dragging && e.type === "pointerup") saveFileGroupOrder(order);
         root.dispatchEvent(new Event("treechange"));
-      };
-      heading.addEventListener("pointermove",move);
-      ["pointerup","pointercancel","lostpointercapture"].forEach(type => heading.addEventListener(type,end));
+      }
     });
   }
   function render({groups, selectedKey="", labels={}}) {
@@ -120,7 +135,7 @@ export function createFilesTree({ list, emptyState, count, toolbar, onOpen, onDe
       heading.type = "button"; heading.className = "source-heading";
       heading.dataset.treeKey = group.kind;
       heading.dataset.tooltip = labels.groupInteraction || "";
-      heading.innerHTML = '<svg class="source-grip" viewBox="0 0 14 12" fill="currentColor" aria-hidden="true"><circle cx="5" cy="2" r="1"/><circle cx="9" cy="2" r="1"/><circle cx="5" cy="6" r="1"/><circle cx="9" cy="6" r="1"/><circle cx="5" cy="10" r="1"/><circle cx="9" cy="10" r="1"/></svg><span class="source-title"></span><span class="source-count collapse-count"></span>';
+      heading.innerHTML = FILES_GRIP_SVG + '<span class="source-title"></span><span class="source-count collapse-count"></span>';
       heading.querySelector(".source-title").textContent=group.label;
       heading.querySelector(".source-count").textContent=group.entries.length;
       const body=document.createElement("div"); body.className="source-body";
@@ -191,7 +206,7 @@ export function createFilesTree({ list, emptyState, count, toolbar, onOpen, onDe
     requestAnimationFrame(fitChainLabels);
   }
   const svg = {
-    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+    trash: FILES_TRASH_SVG,
     file: FILE_ICON_SVG,
     folder: FOLDER_ICON_SVG
   };
@@ -341,17 +356,23 @@ export function createFilesTree({ list, emptyState, count, toolbar, onOpen, onDe
       } else {
         row.setAttribute("aria-current", "false");
         row.addEventListener("click", () => {
-          onOpen?.(node.entry);
           const article = root;
-          article.querySelectorAll('.tree-row[aria-current="true"]').forEach((item) => item.setAttribute("aria-current", "false"));
-          article.querySelectorAll(".contains-selected").forEach((item) => item.classList.remove("contains-selected"));
-          row.setAttribute("aria-current", "true");
-          for (let ancestor = row.parentElement; ancestor && ancestor !== article; ancestor = ancestor.parentElement) {
-            if (ancestor.classList.contains("tree-children")) ancestor.previousElementSibling.classList.add("contains-selected");
-            if (ancestor.classList.contains("source-body")) ancestor.closest(".source-section").querySelector(".source-heading").classList.add("contains-selected");
-          }
-
-          article.dispatchEvent(new Event("fileselected"));
+          const requestId = ++selectionRequestId;
+          const select = () => {
+            if (root !== article || requestId !== selectionRequestId) return;
+            article.querySelectorAll('.tree-row[aria-current="true"]').forEach((item) => item.setAttribute("aria-current", "false"));
+            article.querySelectorAll(".contains-selected").forEach((item) => item.classList.remove("contains-selected"));
+            row.setAttribute("aria-current", "true");
+            for (let ancestor = row.parentElement; ancestor && ancestor !== article; ancestor = ancestor.parentElement) {
+              if (ancestor.classList.contains("tree-children")) ancestor.previousElementSibling.classList.add("contains-selected");
+              if (ancestor.classList.contains("source-body")) ancestor.closest(".source-section").querySelector(".source-heading").classList.add("contains-selected");
+            }
+            article.dispatchEvent(new Event("fileselected"));
+          };
+          const opened = onOpen?.(node.entry);
+          if (opened && typeof opened.then === "function") {
+            opened.then(value => { if (value !== false) select(); }).catch(() => {});
+          } else if (opened !== false) select();
         });
       }
     });

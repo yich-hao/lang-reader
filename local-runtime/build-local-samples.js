@@ -138,7 +138,7 @@ function createExcludeMatcher(pattern) {
   const isDirectory = /\/$/.test(String(pattern || ""));
   const source = normalizePath(resolveSourcePath(pattern));
   if (source.includes("*")) {
-    const regex = new RegExp(`^${escapeRegExp(source).replaceAll("\\*", ".*")}$`);
+    const regex = new RegExp(`^${source.split("*").map(escapeRegExp).join(".*")}$`);
     return (path) => regex.test(normalizePath(path));
   }
   return (path) => {

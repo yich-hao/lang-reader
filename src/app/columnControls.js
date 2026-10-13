@@ -3,7 +3,8 @@ import { DEFAULT_TAG } from "../core/config.js";
 import { getShrinkCapacity } from "../ui/tableLayout.js";
 import { SPEAKER_ON_SVG, SPEAKER_MUTE_SVG } from "../ui/uiIcons.js";
 
-export function createColumnControls({ document, window, state, t, saveSettings, parseAndShow,
+export function createColumnControls({ document, window, state, t, saveSettings, onColumnChange,
+  getLanguageOptions,
   cleanTag, normalizeSingleRole, defaultLanguageForColumn, getColumnCount, getRenderedColumnWidths,
   getMinColumnWidth, redistributeColumnWidths, applyColumnLayout, getCurrentRenderedColumnWidths }) {
   function renderColumnControls(index) {
@@ -21,7 +22,7 @@ export function createColumnControls({ document, window, state, t, saveSettings,
       state.columnRoles = [...state.columnRoles];
       state.columnRoles[index] = state.columnRoles[index] === "mute" ? "sentence" : "mute";
       saveSettings();
-      parseAndShow(true, { animate: false });
+      onColumnChange(index);
     });
 
     const hideButton = document.createElement("button");
@@ -36,7 +37,7 @@ export function createColumnControls({ document, window, state, t, saveSettings,
       state.hiddenPreviousRoles[index] = state.columnRoles[index] === "hide" ? "sentence" : state.columnRoles[index];
       state.columnRoles[index] = "hide";
       saveSettings();
-      parseAndShow(true, { animate: false });
+      onColumnChange(index);
     });
 
     wrap.append(renderColumnTagEditor(index), muteButton, renderLanguagePicker(index), hideButton);
@@ -50,7 +51,12 @@ export function createColumnControls({ document, window, state, t, saveSettings,
     const button = document.createElement("button");
     button.type = "button";
     button.className = "column-tag-button";
-    button.innerHTML = `<span>${cleanTag(state.columnTags[index] || DEFAULT_TAG)}</span><span class="tag-edit-mark">⌄</span>`;
+    const label = document.createElement("span");
+    label.textContent = cleanTag(state.columnTags[index] || DEFAULT_TAG);
+    const mark = document.createElement("span");
+    mark.className = "tag-edit-mark";
+    mark.textContent = "⌄";
+    button.append(label, mark);
     button.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") event.stopPropagation();
     });
@@ -122,6 +128,7 @@ export function createColumnControls({ document, window, state, t, saveSettings,
       closeTagEditors();
       return;
     }
+    const previousLanguage = state.columnLanguages[index];
     state.columnTags = [...state.columnTags];
     state.columnTags[index] = cleanTag(value);
     if (!state.manualColumnLanguages[index]) {
@@ -130,7 +137,7 @@ export function createColumnControls({ document, window, state, t, saveSettings,
     }
     closeTagEditors();
     saveSettings();
-    parseAndShow(true, { animate: false });
+    onColumnChange(index, { tagChanged: true, languageChanged: previousLanguage !== state.columnLanguages[index] });
   }
 
   function renderHiddenColumnButton(index) {
@@ -148,7 +155,7 @@ export function createColumnControls({ document, window, state, t, saveSettings,
       state.columnRoles = [...state.columnRoles];
       state.columnRoles[index] = normalizeSingleRole(state.hiddenPreviousRoles[index] || "sentence");
       saveSettings();
-      parseAndShow(true, { animate: false });
+      onColumnChange(index);
     });
     return button;
   }
@@ -262,8 +269,8 @@ export function createColumnControls({ document, window, state, t, saveSettings,
   function renderLanguageOptions(menu, columnIndex, query) {
     menu.querySelectorAll(".language-option").forEach((node) => node.remove());
     const normalizedQuery = query.trim().toLowerCase();
-    getSpeechLanguages(window.speechSynthesis?.getVoices() || [], [state.targetLanguage, state.translationLanguage,
-      ...(state.columnLanguages || [])])
+    (getLanguageOptions?.() || getSpeechLanguages(window.speechSynthesis?.getVoices() || [],
+      [state.targetLanguage, state.translationLanguage, ...(state.columnLanguages || [])]))
       .filter((language) => {
         const haystack = `${language.code} ${language.short} ${Object.values(language.names).join(" ")}`.toLowerCase();
         return !normalizedQuery || haystack.includes(normalizedQuery);
@@ -272,14 +279,18 @@ export function createColumnControls({ document, window, state, t, saveSettings,
         const option = document.createElement("button");
         option.type = "button";
         option.className = "language-option";
-        option.innerHTML = `<span class="language-badge lang-${language.code}">${language.short}</span><span>${getLanguageLabel(language.code, state.uiLanguage)}</span>`;
+        const badge = document.createElement("span"), label = document.createElement("span");
+        badge.className = `language-badge lang-${language.code}`; badge.textContent = language.short;
+        label.textContent = getLanguageLabel(language.code, state.uiLanguage) + (language.currentDocument ? " · " + t("currentDocumentLanguage") : "");
+        option.append(badge,label);
         option.addEventListener("click", (event) => {
           event.stopPropagation();
+          const previousLanguage = state.columnLanguages[columnIndex];
           state.columnLanguages[columnIndex] = language.code;
           state.manualColumnLanguages[columnIndex] = true;
           saveSettings();
           closeLanguagePickers();
-          parseAndShow(true, { animate: false });
+          onColumnChange(columnIndex, { languageChanged: previousLanguage !== language.code });
         });
         menu.append(option);
       });

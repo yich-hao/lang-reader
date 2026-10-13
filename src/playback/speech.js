@@ -1,14 +1,14 @@
 import { getVoiceBaseName, normalizeDocumentLanguage, voiceMatchesLanguage } from "../i18n/languages.js";
 import { createSpeechProgress } from "./speechProgress.js";
 import { createSpeechTiming } from "./speechTiming.js";
+import { createSpeechStartup } from "./speechStartup.js";
 import { GOOGLE_RATE_MODEL, isGoogleNetworkVoice, speechRateForVoice } from "./speechRate.js";
 
-export function createSpeech({ timingModel, now = () => performance.now() } = {}) {
-  if (!timingModel) {
-    let storage = null;
-    try { storage = window.localStorage; } catch { /* Storage is optional. */ }
-    timingModel = createSpeechTiming({ storage });
-  }
+export function createSpeech({ timingModel, startupModel, now = () => performance.now() } = {}) {
+  let storage = null;
+  try { storage = window.localStorage; } catch { /* Storage is optional. */ }
+  timingModel ||= createSpeechTiming({ storage });
+  startupModel ||= createSpeechStartup({ storage });
   const synth = window.speechSynthesis;
   let voices = [];
   let selectedVoiceName = "";
@@ -43,8 +43,10 @@ export function createSpeech({ timingModel, now = () => performance.now() } = {}
   }
 
   function speak(text, options = {}) {
+    const requestedAt = now();
     if (!synth || !text) return Promise.resolve();
     cancelActiveSpeech("Speech replaced");
+    if (synth.paused) synth.resume();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = options.lang || "de-DE";
@@ -69,9 +71,16 @@ export function createSpeech({ timingModel, now = () => performance.now() } = {}
         settled: false,
         progress: null,
         timingOptions, estimate, started: false, activeAt: null, elapsedMs: 0, boundaries: 0,
+        requestedAt, startupMs: null,
+        startupValid: !synth.paused && !synth.pending && !synth.speaking
+          && (!window.document || window.document.visibilityState === "visible"),
         onMeasurement: options.onMeasurement
       };
       activeSpeech = session;
+      session.onVisibilityChange = () => {
+        if (!session.started && window.document.visibilityState !== "visible") session.startupValid = false;
+      };
+      window.document?.addEventListener?.("visibilitychange", session.onVisibilityChange);
 
       if (typeof options.onProgress === "function") {
         session.progress = createSpeechProgress({
@@ -86,6 +95,8 @@ export function createSpeech({ timingModel, now = () => performance.now() } = {}
         if (activeSpeech !== session || session.settled || session.started) return;
         session.started = true;
         session.activeAt = now();
+        session.startupMs = session.activeAt - session.requestedAt;
+        if (synth.paused || (window.document && window.document.visibilityState !== "visible")) session.startupValid = false;
         session.progress?.start();
       };
       utterance.onpause = () => pauseSession(session);
@@ -133,6 +144,7 @@ export function createSpeech({ timingModel, now = () => performance.now() } = {}
 
   function pauseSession(session) {
     if (activeSpeech !== session || session.settled) return;
+    if (!session.started) session.startupValid = false;
     if (session.activeAt !== null) session.elapsedMs += now() - session.activeAt;
     session.activeAt = null;
     session.progress?.pause();
@@ -159,9 +171,11 @@ export function createSpeech({ timingModel, now = () => performance.now() } = {}
     if (!session || session.settled) return;
     const actualMs = session.elapsedMs + (session.activeAt === null ? 0 : now() - session.activeAt);
     if (!error && session.started) timingModel.observe(session.utterance.text, session.timingOptions, actualMs);
+    if (!error && session.started && session.startupValid) startupModel.observe(session.timingOptions, session.startupMs);
     if (error) session.progress?.stop();
     else session.progress?.finish();
     session.settled = true;
+    window.document?.removeEventListener?.("visibilitychange", session.onVisibilityChange);
     if (session.timeoutId) clearTimeout(session.timeoutId);
     session.utterance.onend = null;
     session.utterance.onerror = null;
@@ -171,7 +185,8 @@ export function createSpeech({ timingModel, now = () => performance.now() } = {}
     session.utterance.onresume = null;
     if (activeSpeech === session) activeSpeech = null;
     try {
-      session.onMeasurement?.({ ...session.estimate, actualMs, boundaries: session.boundaries,
+      session.onMeasurement?.({ ...session.estimate, actualMs, startupMs: session.startupMs,
+        startupSampleValid: !error && session.started && session.startupValid, boundaries: session.boundaries,
         voice: session.utterance.voice?.name || "default", lang: session.utterance.lang,
         rate: session.timingOptions.rate, engineRate: session.utterance.rate,
         rateModel: session.timingOptions.rateModel || "native", completed: !error && session.started, error: error ? String(error) : null });
@@ -192,10 +207,18 @@ export function createSpeech({ timingModel, now = () => performance.now() } = {}
     return Math.min(180000, Math.max(30000, Math.ceil(estimatedMs)));
   }
 
+  function getStartupDelay({ lang = "de-DE", rate = 1 } = {}) {
+    const voice = getSelectedVoice(lang);
+    const requestedRate = Number(rate || 1);
+    return startupModel.estimate({ voice, lang, rate: requestedRate,
+      ...(isGoogleNetworkVoice(voice) ? { rateModel: GOOGLE_RATE_MODEL,
+        engineRate: speechRateForVoice(requestedRate, voice, lang) } : {}) });
+  }
+
   if (synth) {
     loadVoices();
     synth.onvoiceschanged = loadVoices;
   }
 
-  return { getVoices, loadVoices, setVoice, setVoicesByLanguage, getSelectedVoice, speak, stop, pause, resume };
+  return { getVoices, loadVoices, setVoice, setVoicesByLanguage, getSelectedVoice, getStartupDelay, speak, stop, pause, resume };
 }

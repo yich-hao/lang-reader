@@ -995,7 +995,7 @@ h2 {
 
 .panel-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
@@ -1376,15 +1376,6 @@ input[type="range"] {
   line-height: 1.4;
 }
 
-.table-toolbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 13px;
-  margin-bottom: 10px;
-}
-
 .parsed-table-wrap {
   overflow: auto;
   border: 1px solid var(--line);
@@ -1525,12 +1516,6 @@ input[type="range"] {
 
 .study-setup[data-step="practice"] .study-setup-heading h3 {
   font-size: clamp(16px, 1.5vw, 18px);
-}
-
-.study-step {
-  color: var(--muted);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
 }
 
 .study-setup-summary {
@@ -3077,6 +3062,12 @@ input[type="range"] {
 
 .reader-unit {
   border-radius: 4px;
+}
+
+.reader-link {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .reader-unit:hover,

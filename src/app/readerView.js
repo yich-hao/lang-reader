@@ -98,7 +98,7 @@ export function createReaderView({ document, container, getBlocks, getEffectiveC
       const row = document.createElement("tr");
       block.headers.forEach((header) => {
         const th = document.createElement("th");
-        th.textContent = header;
+        th.append(renderReaderInline(header, -1));
         row.append(th);
       });
       thead.append(row);
@@ -125,7 +125,10 @@ export function createReaderView({ document, container, getBlocks, getEffectiveC
     wrap.className = "reader-inline";
     wrap.dir = "auto";
     if (itemIndex === undefined || itemIndex === null || itemIndex < 0) {
-      wrap.textContent = text;
+      forEachReaderDisplaySegment(text, segment => {
+        if (segment.link) wrap.append(createReaderLink(segment, -1, { unitLevel: "word" }));
+        else wrap.append(document.createTextNode(segment.raw));
+      });
       return wrap;
     }
     wrap.addEventListener("click", (event) => {
@@ -164,6 +167,13 @@ export function createReaderView({ document, container, getBlocks, getEffectiveC
   function renderReaderWords(wrap, text, itemIndex, columnIndex, fromHere) {
     let wordIndex = 0;
     forEachReaderDisplaySegment(text, (segment) => {
+      if (segment.link) {
+        wrap.append(createReaderLink(segment, itemIndex, {
+          unitLevel: "word", columnIndex, wordIndex: wordIndex++,
+          sentenceIndex: getSentenceIndexAtOffset(text, segment.start)
+        }));
+        return;
+      }
       if (segment.translation) {
         wrap.append(createReaderTranslationUnit(segment.raw, segment.text, {
           itemIndex,
@@ -244,7 +254,9 @@ export function createReaderView({ document, container, getBlocks, getEffectiveC
 
   function appendReaderUnitSegments(parent, text, itemIndex, options) {
     forEachReaderDisplaySegment(text, (segment) => {
-      if (segment.translation) {
+      if (segment.link) {
+        parent.append(createReaderLink(segment, itemIndex, options));
+      } else if (segment.translation) {
         parent.append(createReaderTranslationUnit(segment.raw, segment.text, {
           itemIndex,
           columnIndex: options.columnIndex || 0,
@@ -271,6 +283,25 @@ export function createReaderView({ document, container, getBlocks, getEffectiveC
     note.className = "reader-note";
     note.textContent = text;
     return note;
+  }
+
+  function createReaderLink(link, itemIndex, options) {
+    const anchor = document.createElement(link.href === null ? "span" : "a");
+    anchor.className = `reader-unit reader-link reader-${options.unitLevel}`;
+    anchor.textContent = link.text;
+    if (link.href !== null) {
+      anchor.href = link.href;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+    }
+    if (itemIndex >= 0) {
+      anchor.dataset.itemIndex = String(itemIndex);
+      anchor.dataset.columnIndex = String(options.columnIndex || 0);
+      anchor.dataset.sentenceIndex = String(options.sentenceIndex || 0);
+      anchor.dataset.wordIndex = String(options.wordIndex || 0);
+    }
+    anchor.addEventListener("click", event => event.stopPropagation());
+    return anchor;
   }
 
 

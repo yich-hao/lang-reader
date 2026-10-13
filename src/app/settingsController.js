@@ -8,11 +8,11 @@ import { normalizeStudySize } from "../study/session.js";
 import { showSegmentRejection, clearSegmentRejection } from "../ui/customControls.js";
 import { setEditorActionButton } from "../ui/editorActions.js";
 import { SPEAKER_ON_SVG, SPEED_SVG } from "../ui/uiIcons.js";
-import { analyzeVocabularyStructure } from "../parsing/parser.js";
+import { analyzeVocabularyStructure, refreshItemMetadata } from "../parsing/parser.js";
 import { parseDocumentOptions, stripFrontMatterComment } from "./documentOptions.js";
 import { normalizeGapSeconds, gapSliderIndex, gapSecondsAtIndex } from "../playback/playbackGap.js";
 
-export function createSettingsController({ state, services, elements, document, window, navigator, speech, showNotice, setStatus, parseAndShow, renderParsedTable, syncSourceContext, renderFilesPanel, initTheme, initTranslateWidget, syncTranslationButtons, updateTranslationVisibility, docHasTranslations, buildReaderSpeechSegments = () => [], getActiveDraftId, getActiveFileKey, getValidSamplePath, getValidDocumentPath, getValidClickMode, getValidPlaybackUnit, getColumnCount, showParsed, showEditor, updatePositionText, updatePlaybackButtons, updateTranslateLink, updateThemeButtonLabel, updatePanelToggleLabel, applyClickModeChange, pauseForModeChange, rerenderClickUnits, debounce, isFileUnexported }) {
+export function createSettingsController({ state, services, elements, document, window, navigator, speech, languagePreferences, showNotice, setStatus, parseAndShow, renderParsedTable, syncSourceContext, renderFilesPanel, initTheme, initTranslateWidget, syncTranslationButtons, updateTranslationVisibility, docHasTranslations, buildReaderSpeechSegments = () => [], getActiveDraftId, getActiveFileKey, getValidSamplePath, getValidDocumentPath, getValidClickMode, getValidPlaybackUnit, getColumnCount, showParsed, showEditor, updatePlaybackButtons, updateTranslateLink, updateThemeButtonLabel, updatePanelToggleLabel, applyClickModeChange, pauseForModeChange, rerenderClickUnits, debounce, isFileUnexported }) {
   let documentSettingsKey = "";
   let pendingDocumentSettings = false;
   let previousDocumentOptions = {};
@@ -84,15 +84,17 @@ export function createSettingsController({ state, services, elements, document, 
 
   function populateSpeechLanguageOptions() {
     if (!elements.targetLanguageSelect?.append || !elements.translationLanguageSelect?.append) return;
-    const entries = getSpeechLanguages(speech?.getVoices() || [], [state.targetLanguage, state.translationLanguage,
-      ...(state.columnLanguages || [])]).map((language) => ({
+    const languages = languagePreferences?.options() || getSpeechLanguages(speech?.getVoices() || [],
+      [state.targetLanguage, state.translationLanguage, ...(state.columnLanguages || [])]);
+    const entries = languages.map((language) => ({
       value: language.code,
-      label: getLanguageLabel(language.code, state.uiLanguage)
+      label: getLanguageLabel(language.code, state.uiLanguage) + (language.currentDocument ? " · " + t("currentDocumentLanguage") : "")
     }));
     populateSelect(elements.targetLanguageSelect, entries);
     populateSelect(elements.translationLanguageSelect, entries);
     elements.targetLanguageSelect.value = state.targetLanguage;
     elements.translationLanguageSelect.value = state.translationLanguage;
+    services.languageList?.refresh();
   }
 
   function populateSelect(select, entries) {
@@ -127,7 +129,7 @@ export function createSettingsController({ state, services, elements, document, 
     elements.speechSourceSelect.dataset.currentSource = elements.speechSourceSelect.value;
     elements.repeatInput.value = state.saved.repeat || 1;
     elements.gapInput.value = normalizeGapSeconds(state.saved.gap);
-    elements.partGapInput.value = state.saved.partGap || 1.5;
+    elements.partGapInput.value = normalizeGapSeconds(state.saved.partGap ?? elements.gapInput.value);
     elements.rateInput.value = state.saved.rate || 1;
     elements.volumeInput.value = state.saved.volume ?? state.saved.pitch ?? 1;
     elements.showTranslationsInput.checked = Boolean(state.saved.hideTranslations || state.saved.showTranslations === false);
@@ -168,6 +170,7 @@ export function createSettingsController({ state, services, elements, document, 
     }
 
     state.saved = {
+      languageList: state.saved.languageList,
       sourceText: elements.sourceInput.value,
       documentDefaults: state.saved.documentDefaults,
       sourceMode: state.sourceMode,
@@ -370,15 +373,20 @@ export function createSettingsController({ state, services, elements, document, 
     if (firstParse && !manualDocumentOptions.has("mode") && state.saved.articleSettings?.[key]?.mode) elements.parseModeSelect.value = state.saved.articleSettings[key].mode;
     const changed = Object.fromEntries(Object.entries(options).filter(([name, value]) =>
       !manualDocumentOptions.has(name) && (firstParse || previousDocumentOptions[name] !== value)));
+    previousDocumentOptions = options;
     applyDocumentProfile(changed);
     pendingDocumentSettings = false;
     const enterStudy = changed.workspace === "study" && elements.parseModeSelect.value === "vocabulary";
-    previousDocumentOptions = options;
     syncParseModeToggle();
     updateRangeLabels();
     syncSpeechSourceButtons();
     updateParagraphOptionsVisibility();
     return enterStudy;
+  }
+
+  function getDocumentLanguages() {
+    return [previousDocumentOptions.targetLanguage,
+      previousDocumentOptions.translationLanguage === "target" ? previousDocumentOptions.targetLanguage || state.targetLanguage : previousDocumentOptions.translationLanguage];
   }
 
   function shouldUseReaderMode() {
@@ -404,15 +412,25 @@ export function createSettingsController({ state, services, elements, document, 
     }
   }
 
-  function getParserPartRoles() {
+  function getParserPartRoles({ includeSilent = false } = {}) {
     const count = Math.max(state.columnRoles.length, state.columnTags.length, DEFAULT_PARSER_ROLES.length);
     return Array.from({ length: count }, (_, index) => {
-      if (state.columnRoles[index] === "mute" || state.columnRoles[index] === "hide") return state.columnRoles[index];
+      if (!includeSilent && (state.columnRoles[index] === "mute" || state.columnRoles[index] === "hide")) return state.columnRoles[index];
       const tag = cleanTag(state.columnTags[index] || "");
       if (tag.includes("translation") || tag.includes("translate") || tag.includes("翻译")) return "translation";
       if (tag.includes("word") || tag.includes("vocab") || tag.includes("单词")) return "word";
       return DEFAULT_PARSER_ROLES[index] || "sentence";
     });
+  }
+
+  function refreshColumnMetadata(index) {
+    if (state.parsedViewMode === "reader") return;
+    const role = getParserPartRoles({ includeSilent: true })[index];
+    for (const item of state.items) {
+      if (["section", "instruction"].includes(item.sourceType) || !item.parts?.[index]) continue;
+      item.parts[index].role = role;
+      refreshItemMetadata(item);
+    }
   }
 
   function getStudyColumnRoles(targetItems = state.items) {
@@ -597,12 +615,12 @@ export function createSettingsController({ state, services, elements, document, 
     else showEditor();
     updateRangeLabels();
     syncParseModeToggle();
-    updatePositionText();
     updatePlaybackButtons();
     updateTranslateLink();
     updateThemeButtonLabel();
     updatePanelToggleLabel();
     services.studyController.applyI18n();
+    populateSpeechLanguageOptions();
   }
 
   function t(key, ...args) {
@@ -611,12 +629,7 @@ export function createSettingsController({ state, services, elements, document, 
   }
 
   function updateTargetLanguageLabels() {
-    [...elements.targetLanguageSelect.options].forEach((option) => {
-      option.textContent = getLanguageLabel(option.value, state.uiLanguage);
-    });
-    [...elements.translationLanguageSelect.options].forEach((option) => {
-      option.textContent = getLanguageLabel(option.value, state.uiLanguage);
-    });
+    populateSpeechLanguageOptions();
   }
 
   function getValidParseMode(value) {
@@ -773,6 +786,7 @@ export function createSettingsController({ state, services, elements, document, 
 
   function applyDefaultLanguagesForRoles({ previousUiLanguage, previousTargetLanguage } = {}) {
     state.columnLanguages = state.columnLanguages.map((language, index) => {
+      if (state.manualColumnLanguages[index]) return language;
       const role = state.columnRoles[index] || "skip";
       if (role !== "mute" && role !== "hide" && (!language || language === previousTargetLanguage)) return defaultLanguageForColumn(index);
       return language;
@@ -783,7 +797,7 @@ export function createSettingsController({ state, services, elements, document, 
     elements.uiLanguageSelect.addEventListener("change", () => {
       const previousUiLanguage = state.uiLanguage;
       state.uiLanguage = elements.uiLanguageSelect.value;
-      if (state.translationLanguage === previousUiLanguage) {
+      if (state.translationLanguage === previousUiLanguage && !previousDocumentOptions.translationLanguage && !manualDocumentOptions.has("translationLanguage")) {
         state.translationLanguage = state.uiLanguage;
         elements.translationLanguageSelect.value = state.translationLanguage;
       }
@@ -883,7 +897,7 @@ export function createSettingsController({ state, services, elements, document, 
       updateParagraphOptionsVisibility();
       saveSettings();
       if (state.isParsedView && element === elements.parseModeSelect) parseAndShow(false);
-      else if (state.isParsedView && (element === elements.modeSelect || element === elements.playModeSelect || element === elements.playbackUnitSelect)) rerenderClickUnits();
+      else if (state.isParsedView && (element === elements.modeSelect || element === elements.playbackUnitSelect)) rerenderClickUnits();
     }));
 
     elements.speechSourceSelect.addEventListener("change", handleSpeechSourceChange);
@@ -916,5 +930,5 @@ export function createSettingsController({ state, services, elements, document, 
     document.addEventListener("pointerdown", () => settingsPanel.classList.remove("keyboard-navigation"), true);
   }
 
-  return { prepareDocumentSettings, applyConfigDefaults, populateLanguageOptions, populateSelect, restoreSettings, getValidSourceMode, saveSettings, saveStudyPreferences, refreshVoices, handleSpeechSourceChange, isSpeechSourceAvailable, getSpeechSourceLabel, showSpeechFailureNotice, renderLanguageVoiceControls, applyDocumentOptions, parseDocumentOptions, stripFrontMatterComment, shouldUseReaderMode, getPlaylistOptions, syncGapInputs, getParserPartRoles, getStudyColumnRoles, getEffectivePartRole, ensureColumnSettings, isTranslationColumn, updateRangeLabels, applyArticleSettings, updateSidebarVisibilityByFeatures, updateParagraphOptionsVisibility, syncParseModeToggle, syncSpeechSourceButtons, applyI18n, t, updateTargetLanguageLabels, getValidParseMode, getValidLanguageCode, getActiveSpeechLanguages, filterVoicesByActiveLanguages, groupVoicesByName, formatVoiceGroupLabel, pickDefaultVoice, languageCodeFromVoice, filterVoicesBySource, getVoiceSource, normalizeSettings, normalizeLanguageSettings, normalizeColumnTags, getDefaultColumnTag, migrateRoleTags, cleanTag, normalizeRoleSettings, normalizeSingleRole, getDefaultColumnLanguages, defaultLanguageForRole, defaultLanguageForColumn, applyDefaultLanguagesForRoles, bindEvents };
+  return { prepareDocumentSettings, getDocumentLanguages, applyConfigDefaults, populateLanguageOptions, populateSpeechLanguageOptions, populateSelect, restoreSettings, getValidSourceMode, saveSettings, saveStudyPreferences, refreshVoices, handleSpeechSourceChange, isSpeechSourceAvailable, getSpeechSourceLabel, showSpeechFailureNotice, renderLanguageVoiceControls, applyDocumentOptions, parseDocumentOptions, stripFrontMatterComment, shouldUseReaderMode, getPlaylistOptions, syncGapInputs, getParserPartRoles, refreshColumnMetadata, getStudyColumnRoles, getEffectivePartRole, ensureColumnSettings, isTranslationColumn, updateRangeLabels, applyArticleSettings, updateSidebarVisibilityByFeatures, updateParagraphOptionsVisibility, syncParseModeToggle, syncSpeechSourceButtons, applyI18n, t, updateTargetLanguageLabels, getValidParseMode, getValidLanguageCode, getActiveSpeechLanguages, filterVoicesByActiveLanguages, groupVoicesByName, formatVoiceGroupLabel, pickDefaultVoice, languageCodeFromVoice, filterVoicesBySource, getVoiceSource, normalizeSettings, normalizeLanguageSettings, normalizeColumnTags, getDefaultColumnTag, migrateRoleTags, cleanTag, normalizeRoleSettings, normalizeSingleRole, getDefaultColumnLanguages, defaultLanguageForRole, defaultLanguageForColumn, applyDefaultLanguagesForRoles, bindEvents };
 }

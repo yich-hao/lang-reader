@@ -4,10 +4,11 @@ import { sampleLabelFromPath, documentLabelFromPath } from "./sourceCatalog.js";
 import { uploadEntries, droppedEntries } from "../files/fileImports.js";
 import { setEditorActionButton } from "../ui/editorActions.js";
 
-export function createDocumentController({ state, document, window, navigator, elements, t, saveSettings, stopPlayback, parseAndShow, initTranslateWidget, setSidePanelTab, isMobileSettings, setSettingsSheetState, syncParseModeToggle, updateParagraphOptionsVisibility, syncStudyAvailability, setStatus, updatePositionText, updateTranslateLink, syncTranslationButtons, filesPanel, studyController, documentLoader, loadSourcePath, loadFileObject, importedFiles, originalSourceTexts, sourceEdits, exportedFiles, unsavedSourceKeys, currentSourceChanged, isFileUnexported, hasUnsavedSources, saveSourceInputSettings }) {
+export function createDocumentController({ state, document, window, navigator, elements, t, saveSettings, stopPlayback, parseAndShow, initTranslateWidget, setSidePanelTab, isMobileSettings, setSettingsSheetState, syncParseModeToggle, updateParagraphOptionsVisibility, syncStudyAvailability, setStatus, updateTranslateLink, syncTranslationButtons, filesPanel, studyController, documentLoader, loadSourcePath, loadFileObject, importedFiles, originalSourceTexts, sourceEdits, exportedFiles, unsavedSourceKeys, currentSourceChanged, isFileUnexported, hasUnsavedSources, saveSourceInputSettings }) {
   let recentSourceKeys = Array.isArray(state.saved?.recentSourceKeys)
     ? state.saved.recentSourceKeys.filter(key => typeof key === "string" && key).slice(0, 20)
     : [];
+  let openRequestId = 0;
 
   function rememberOpenedSource(previousKey, key = state.activeSourceKey) {
     recentSourceKeys = [...new Set([key, previousKey, ...recentSourceKeys].filter(Boolean))].slice(0, 20);
@@ -46,6 +47,7 @@ export function createDocumentController({ state, document, window, navigator, e
   }
 
   async function autoLoadSample() {
+    const requestId = ++openRequestId;
     const cached = {
       text: state.saved?.sourceText,
       key: state.saved?.activeSourceKey || state.saved?.documentPath || "",
@@ -67,9 +69,12 @@ export function createDocumentController({ state, document, window, navigator, e
     for (const candidate of candidates) {
       if (attempted.has(candidate.path)) continue;
       attempted.add(candidate.path);
-      state.sourceMode = candidate.mode;
-      syncSourceContext();
-      loaded = await loadSourcePath(candidate.path);
+      loaded = await loadSourcePath(candidate.path, { sourceMode: candidate.mode });
+      if (requestId !== openRequestId) return;
+      if (loaded) {
+        state.sourceMode = candidate.mode;
+        syncSourceContext();
+      }
       if (loaded) break;
     }
     if (!loaded && typeof cached.text === "string" && cached.text.trim()) {
@@ -200,47 +205,39 @@ export function createDocumentController({ state, document, window, navigator, e
 
   async function openFileEntry(entry) {
     if (!entry?.key) return false;
+    const requestId = ++openRequestId;
     const previousKey = state.activeSourceKey;
     const provisionalId = getActiveDraftId();
-    if (entry.key !== state.activeSourceKey && provisionalId && state.userDrafts[provisionalId].provisional && !elements.sourceInput.value.trim()) {
-      delete state.userDrafts[provisionalId];
-      unsavedSourceKeys.delete(state.activeSourceKey);
-    }
+    const discardProvisional = entry.key !== previousKey && provisionalId
+      && state.userDrafts[provisionalId].provisional && !elements.sourceInput.value.trim();
     saveSettings();
     stopPlayback();
+    let loaded;
     if (entry.kind === "document") {
       rememberCurrentSourceSelection();
-      state.sourceMode = "document";
-      state.lastDocumentPath = getValidDocumentPath(entry.key);
-      syncSourceContext();
-      const loaded = await loadDocument(true);
-      if (loaded) {
-        rememberOpenedSource(previousKey);
-        saveSettings();
-        applyParseModeFromName(entry.key);
-        parseAndShow(false);
-        updateTitleDisplay();
-      }
-      renderFilesPanel();
-      return loaded;
-    }
-    state.sourceMode = "import";
-    syncSourceContext();
-    let loaded = false;
-    if (entry.kind === "imported") {
+      loaded = await loadSourcePath(entry.key, { sourceMode: "document" });
+    } else if (entry.kind === "imported") {
       const imported = importedFiles.get(entry.key);
-      if (imported) loaded = await loadFileObject(imported.file, entry.key, imported.name);
+      loaded = imported && await loadFileObject(imported.file, entry.key, imported.name, { sourceMode: "import" });
     } else {
-      loaded = await loadSourcePath(entry.key);
+      loaded = await loadSourcePath(entry.key, { sourceMode: "import" });
     }
+    if (requestId !== openRequestId) return false;
     if (!loaded) {
       renderFilesPanel();
       return false;
     }
+    state.sourceMode = entry.kind === "document" ? "document" : "import";
+    if (entry.kind === "document") state.lastDocumentPath = entry.key;
+    else state.lastImportSourceKey = entry.key;
+    if (discardProvisional) {
+      delete state.userDrafts[provisionalId];
+      unsavedSourceKeys.delete(previousKey);
+    }
+    syncSourceContext();
     rememberOpenedSource(previousKey);
-    state.lastImportSourceKey = entry.key;
     saveSettings();
-    applyParseModeFromName(entry.name || getActiveFileName());
+    applyParseModeFromName(entry.kind === "document" ? entry.key : entry.name || getActiveFileName());
     parseAndShow(false);
     renderFilesPanel();
     updateTitleDisplay();
@@ -277,6 +274,8 @@ export function createDocumentController({ state, document, window, navigator, e
   }
 
   function createBrowserDraft({ name, content = "", parse = false }) {
+    openRequestId++;
+    documentLoader.invalidate();
     const currentId = getActiveDraftId();
     if (!String(content).trim() && currentId && state.userDrafts[currentId].provisional && !elements.sourceInput.value.trim()) {
       showEditor();
@@ -296,7 +295,6 @@ export function createDocumentController({ state, document, window, navigator, e
     state.lastImportSourceKey = state.activeSourceKey;
     unsavedSourceKeys.add(state.activeSourceKey);
     state.sourceMode = "import";
-    documentLoader.invalidate();
     elements.sourceInput.value = String(content);
     syncSourceContext();
     saveSettings();
@@ -452,8 +450,12 @@ export function createDocumentController({ state, document, window, navigator, e
     const deletingActive = removed.includes(state.activeSourceKey);
     if (removed.includes(state.lastImportSourceKey)) state.lastImportSourceKey = "";
     if (deletingActive) {
+      openRequestId += 1;
+      documentLoader.invalidate();
+      stopPlayback();
       state.activeSourceKey = "";
       state.activeFileName = "";
+      elements.sourceInput.value = "";
       await openFilesFallback();
     } else {
       saveSettings();
@@ -479,27 +481,44 @@ export function createDocumentController({ state, document, window, navigator, e
   }
 
   async function openFilesFallback() {
+    let requestId = openRequestId;
+    const shouldStopFallback = async entry => {
+      if (requestId !== openRequestId) return true;
+      const opening = openFileEntry(entry);
+      requestId = openRequestId;
+      const loaded = await opening;
+      return loaded || requestId !== openRequestId;
+    };
+    const attempted = new Set();
     for (const key of recentSourceKeys) {
       if (key === state.activeSourceKey) continue;
+      attempted.add(key);
       const documentOption = state.documentOptions.find(option => option.path === key);
       const entry = documentOption
         ? { key, name: documentOption.label || documentLabelFromPath(key), kind: "document" }
         : getImportEntry(key);
-      if (entry && await openFileEntry(entry)) return;
+      if (entry && await shouldStopFallback(entry)) return;
     }
-    const fallback = state.sampleOptions[0];
-    if (fallback) {
-      await openFileEntry({
+    for (const fallback of state.sampleOptions) {
+      if (attempted.has(fallback.path)) continue;
+      attempted.add(fallback.path);
+      if (await shouldStopFallback({
         key: fallback.path,
         name: fallback.label || sampleLabelFromPath(fallback.path),
         kind: "configured"
-      });
-      return;
+      })) return;
     }
-    state.sourceMode = "document";
-    syncSourceContext();
-    const loaded = await loadDocument(true);
-    if (loaded && elements.sourceInput.value.trim()) parseAndShow(false);
+    for (const option of state.documentOptions) {
+      if (attempted.has(option.path)) continue;
+      if (await shouldStopFallback({ key: option.path, name: option.label, kind: "document" })) return;
+    }
+    if (requestId !== openRequestId) return;
+    state.sourceMode = "import";
+    state.activeSourceKey = "";
+    state.activeFileName = "";
+    state.lastImportSourceKey = "";
+    elements.sourceInput.value = "";
+    parseAndShow(false);
     saveSettings();
     renderFilesPanel();
   }
@@ -550,7 +569,7 @@ export function createDocumentController({ state, document, window, navigator, e
     if (state.activeFileName) return state.activeFileName;
     const draftId = getActiveDraftId();
     if (draftId) {
-      return state.userDrafts[draftId]?.name || "new_file.md";
+      return state.userDrafts[draftId]?.name || "new_note.md";
     }
     const val = state.sourceMode === "document" ? state.lastDocumentPath : "";
     return val ? val.substring(val.lastIndexOf("/") + 1) : "untitled.md";
@@ -623,7 +642,6 @@ export function createDocumentController({ state, document, window, navigator, e
       state.sourceMode === "document" ? "raw" : "edit",
       state.sourceMode === "document" ? t("showRaw") : t("editAction"));
     updateTitleDisplay();
-    updatePositionText();
     updateTranslateLink();
     studyController.syncUi();
     if (animate) triggerPanelTransition();
@@ -786,7 +804,7 @@ export function createDocumentController({ state, document, window, navigator, e
       saveSettings();
       stopPlayback();
       createBrowserDraft({
-        name: getUniqueDraftName("new_file.md"),
+        name: getUniqueDraftName("new_note.md"),
         content: "",
         parse: false
       });

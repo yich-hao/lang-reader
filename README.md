@@ -2,7 +2,7 @@
 
 A language-learning web app for reading and vocabulary practice using your own Markdown notes.
 
-Online app: [https://hao-yicheng.github.io/lang-reader/](https://hao-yicheng.github.io/lang-reader/)
+Online app: [https://yich-hao.github.io/lang-reader/](https://yich-hao.github.io/lang-reader/)
 
 [![Lang Reader demo — click for the full video](docs/images/lang-reader-demo.webp)](docs/images/lang-reader-demo.webm?raw=true)
 
@@ -37,12 +37,14 @@ Online app: [https://hao-yicheng.github.io/lang-reader/](https://hao-yicheng.git
     <tr><th>Area</th><th>Option</th><th>Description</th></tr>
   </thead>
   <tbody>
-    <tr><td rowspan="2">Parse</td><td>Mode</td><td>Reader / Vocabulary / Study (Vocabulary practice).</td></tr>
+    <tr><td rowspan="3">Parse</td><td>Mode</td><td>Reader / Vocabulary / Study (Vocabulary practice).</td></tr>
     <tr><td>Language</td><td>Target: document reading language. Translation: translation reading language.</td></tr>
-    <tr><td rowspan="4">Playback</td><td>Click Mode</td><td>Word / Sentence / Paragraph / Cell.</td></tr>
+    <tr><td>Language filter</td><td>Choose and reorder languages in the language menus. Document language tags remain available even when filtered out.</td></tr>
+    <tr><td rowspan="5">Playback</td><td>Click Mode</td><td>Word / Sentence / Paragraph / Cell.</td></tr>
     <tr><td>Play Mode</td><td>Play / Auto Play: Word / Sentence / Paragraph.</td></tr>
+    <tr><td>Auto-play order</td><td>Normal / Column in Vocabulary.</td></tr>
     <tr><td>Loop Count</td><td>1–20 / ∞.</td></tr>
-    <tr><td>Unit Gap</td><td>0.25 / 0.5 / 0.75 / 1, then 2–30 seconds.</td></tr>
+    <tr><td>Unit Gap</td><td>0–1s in 0.1s steps; 1–5s in 0.5s steps; 5–30s in 1s steps. Default: 0.3s.</td></tr>
     <tr><td rowspan="3">Speech</td><td>Provider + Voice</td><td>Filter voices by All / Google / Apple / Microsoft, then choose voices for Target and Translation.</td></tr>
     <tr><td>Speed</td><td>0.5–3×.</td></tr>
     <tr><td>Volume</td><td>0–100%.</td></tr>
@@ -66,6 +68,7 @@ Online app: [https://hao-yicheng.github.io/lang-reader/](https://hao-yicheng.git
     <tr><td>W / S</td><td>Word / Sentence mode</td></tr>
     <tr><td>Hold Alt / Option</td><td>Temporary Word mode</td></tr>
     <tr><td>T</td><td>Translate current unit</td></tr>
+    <tr><td>F</td><td>Switch Settings / Files in reading view; expand the sidebar if collapsed.</td></tr>
     <tr><th colspan="2" align="center">Study</th></tr>
     <tr><td>↑ / ↓</td><td>Primary action / Don't know</td></tr>
     <tr><td>← / →</td><td>Previous / next card</td></tr>
@@ -74,6 +77,8 @@ Online app: [https://hao-yicheng.github.io/lang-reader/](https://hao-yicheng.git
 </table>
 
 <br>
+
+`F` is disabled throughout Edit / Show Raw, while typing in a field, and while a dialog is open.
 
 ## Deploy Locally
 

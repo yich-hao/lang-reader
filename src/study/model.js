@@ -208,35 +208,82 @@ export function listStudySections(document) {
   return sections;
 }
 
-export function mergeStudyProgressDeltas(baseDocument, localDocument, remoteDocument) {
+export function mergeStudyProgressDeltas(baseDocument, localDocument, remoteDocument, { replaceProgress = false } = {}) {
   if (!isStudyDocument(remoteDocument)) return localDocument;
-  const merged = structuredCloneSafe(remoteDocument);
+  if (!isStudyDocument(localDocument)) return remoteDocument;
+  const structure = value => JSON.stringify(value, (key, entry) => key === "progress" || key === "fileHash" ? undefined : entry);
+  const localChanged = structure(baseDocument) !== structure(localDocument);
+  const merged = structuredCloneSafe(localChanged ? localDocument : remoteDocument);
+  if (localChanged) appendRemoteAdditions(merged, baseDocument, remoteDocument);
   const baseCards = groupCardsBySignature(flattenStudyCards(baseDocument));
   const localCards = groupCardsBySignature(flattenStudyCards(localDocument));
+  const remoteCards = groupCardsBySignature(flattenStudyCards(remoteDocument));
 
   flattenStudyCards(merged).forEach(({ card }) => {
     const signature = getCardSignature(card);
     const baseCard = shiftGroupedCard(baseCards, signature);
     const localCard = shiftGroupedCard(localCards, signature);
-    if (!localCard) return;
+    const remoteCard = shiftGroupedCard(remoteCards, signature);
+    if (!localCard || !remoteCard) return;
+    if (replaceProgress) {
+      if (localCard.progress) card.progress = structuredCloneSafe(localCard.progress);
+      else delete card.progress;
+      return;
+    }
+    card.progress = structuredCloneSafe(remoteCard.progress || {});
     STUDY_MODES.forEach((mode) => {
       const base = normalizeProgressTuple(baseCard?.progress?.[mode]);
       const local = normalizeProgressTuple(localCard.progress?.[mode]);
-      const remote = normalizeProgressTuple(card.progress?.[mode]);
-      const passDelta = Math.max(0, local[1] - base[1]);
-      const failDelta = Math.max(0, local[2] - base[2]);
+      const remote = normalizeProgressTuple(remoteCard.progress?.[mode]);
+      if (baseCard?.progress?.[mode] && !localCard.progress?.[mode]) {
+        delete card.progress[mode];
+        return;
+      }
+      const passDelta = local[1] - base[1];
+      const failDelta = local[2] - base[2];
       if (!passDelta && !failDelta) return;
       card.progress ||= {};
       card.progress[mode] = [
         latestTimestamp(remote[0], local[0]),
-        remote[1] + passDelta,
-        remote[2] + failDelta,
+        Math.max(0, remote[1] + passDelta),
+        Math.max(0, remote[2] + failDelta),
         local[0] >= remote[0] ? local[3] : remote[3]
       ];
     });
+    if (!Object.keys(card.progress).length) delete card.progress;
   });
-  merged.fileHash = localDocument.fileHash || merged.fileHash;
+  if (localDocument.fileHash !== baseDocument?.fileHash) merged.fileHash = localDocument.fileHash;
   return merged;
+}
+
+function appendRemoteAdditions(local, base, remote) {
+  for (const field of ["cards", "sections"]) {
+    const signature = field === "cards" ? getCardSignature : section => section.title;
+    const group = values => {
+      const counts = new Map();
+      return new Map((values || []).map(value => {
+        const key = signature(value);
+        const occurrence = counts.get(key) || 0;
+        counts.set(key, occurrence + 1);
+        return [JSON.stringify([key, occurrence]), value];
+      }));
+    };
+    const baseEntries = group(base?.[field]);
+    const localEntries = group(local[field]);
+    for (const [key, value] of group(remote?.[field])) {
+      if (!localEntries.has(key) && !baseEntries.has(key)) {
+        (local[field] ||= []).push(structuredCloneSafe(value));
+      } else if (field === "sections" && localEntries.has(key)) {
+        appendRemoteAdditions(localEntries.get(key), baseEntries.get(key), value);
+      }
+    }
+  }
+}
+
+export function studySourceIdentity(key, name) {
+  if (key.startsWith("draft:")) return { source: `drafts/by-id/${encodeURIComponent(key.slice(6))}.md`, legacySource: `drafts/${name}` };
+  if (key.startsWith("local-file:")) return { source: `imports/by-id/${encodeURIComponent(key.slice(11))}.md`, legacySource: `imports/${name}` };
+  return { source: key.startsWith("folder:") ? `folders/${key.slice(7)}` : key || name, legacySource: "" };
 }
 
 export function isStudyDocument(value) {

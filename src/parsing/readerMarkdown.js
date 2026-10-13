@@ -1,5 +1,7 @@
 const TABLE_SEPARATOR_RE = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/;
 
+import { mapMarkdownLinks } from "./markdownLinks.js";
+
 export function parseMarkdownReader(rawText) {
   const normalized = normalizeMarkdown(rawText);
   if (typeof window !== "undefined" && window.marked && typeof window.marked.lexer === "function") {
@@ -66,7 +68,12 @@ export function parseMarkdownReader(rawText) {
 }
 
 export function cleanInlineMarkdown(text) {
-  return String(text || "")
+  const links = [];
+  const protectedText = mapMarkdownLinks(text, link => {
+    links.push(link.raw);
+    return `\uE000${links.length - 1}\uE001`;
+  });
+  return protectedText
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
@@ -79,7 +86,8 @@ export function cleanInlineMarkdown(text) {
     .replace(/[^\S\n]+/g, " ")
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .trim()
+    .replace(/\uE000(\d+)\uE001/g, (_, index) => links[Number(index)] ?? "");
 }
 
 function normalizeMarkdown(text) {

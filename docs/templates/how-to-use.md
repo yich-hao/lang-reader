@@ -5,13 +5,15 @@ translation: na    # language code or mix/na (same as target)
 # click_mode: word       # word/sentence/paragraph; cell also works in Vocabulary
 # play_mode: sentence    # word/sentence/paragraph; paragraph means cell in Vocabulary
 # loop_count: 2          # 1-20 or infinite
-# unit_gap: 0.75         # seconds: 0.25, 0.5, 0.75, 1, then 2-30
+# unit_gap: 0.3          # seconds: 0-1 by 0.1; 1-5 by 0.5; 5-30 by 1
 # speech: all            # all/apple/google/microsoft; A/G/M also work
 # speed: 1.0             # 0.5-3 in steps of 0.05
 # mode: study            # Vocabulary parsing, then Study setup; no automatic exercise
 ---
 
 # Lang Reader Guide
+
+Source code & Deploy locally: [https://github.com/yich-hao/lang-reader](https://github.com/yich-hao/lang-reader)
 
 ```text
 This guide uses Reader mode.
@@ -62,7 +64,7 @@ Click words, sentences, or cells to hear them.
 
 The cursor-icon setting controls clicks (Word by default); the triangle-icon setting controls Play and Auto Play (Sentence by default). Choose Word, Sentence, or Paragraph/Cell independently. Play reads the current range; Auto Play continues through the document.
 
-CNT (Loop count): 1–20 or unlimited. GAP (Unit gap): 0.25, 0.5, 0.75, 1, then 2–30 seconds; default 0.75. The file option `unit_gap` uses the same values.
+CNT (Loop count): 1–20 or unlimited. GAP (Unit gap): 0–1s in 0.1s steps, 1–5s in 0.5s steps, and 5–30s in 1s steps; default 0.3s. The file option `unit_gap` uses the same values.
 
 ## Voices
 

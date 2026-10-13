@@ -4,17 +4,18 @@ import {
   mkdir,
   readFile,
   rename,
+  realpath,
   stat,
   unlink,
   writeFile
 } from "node:fs/promises";
 import { createServer } from "node:http";
-import { extname, join, normalize, resolve, sep } from "node:path";
+import { extname, join, normalize, relative as relativePath, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isStudyDocument } from "../src/study/model.js";
-import { APP_CONFIG_PATHS, stableLocalSourceKey } from "../src/core/config.js";
+import { APP_CONFIG_PATHS, MANIFEST_FILE_NAME, SUPPORTED_FILE_RE, stableLocalSourceKey } from "../src/core/config.js";
 import { normalizeRuntimeConfig } from "../src/app/runtimeConfig.js";
 
 const execFileAsync = promisify(execFile);
@@ -41,6 +42,9 @@ await refreshLocalSamples();
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+    if (options.allowLan && options.token && url.searchParams.get("studyToken") === options.token) {
+      response.setHeader("Set-Cookie", `lang-reader-local=${encodeURIComponent(options.token)}; HttpOnly; SameSite=Strict; Path=/`);
+    }
     if (url.pathname.startsWith("/api/study") && !runtimeConfig.study.localPersistence) {
       return sendJson(response, 404, { error: "Local Study persistence is disabled" });
     }
@@ -73,7 +77,8 @@ server.listen(options.port, options.host, () => {
   console.log(`Study data: ${DATA_ROOT}`);
 });
 
-async function readStudy(_request, response, url) {
+async function readStudy(request, response, url) {
+  if (!canReadPrivate(request, url)) return sendJson(response, 403, { error: "Forbidden" });
   const paths = resolveStudyPaths(url.searchParams.get("source"));
   const current = await readExistingStudy(paths);
   if (!current) return sendJson(response, 404, { error: "Study progress not found" });
@@ -135,6 +140,21 @@ async function serveStatic(request, response, url) {
     return sendJson(response, 400, { error: "Invalid path" });
   }
   const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  if (isProtectedStaticPath(relative)) return sendJson(response, 403, { error: "Forbidden" });
+  const parts = relative.split("/");
+  const linkedSample = relative.startsWith("local-default/content/imported/");
+  if (linkedSample && !/\.(md|txt|csv|tsv)$/i.test(relative) && !relative.endsWith("/manifest.json")) {
+    return sendJson(response, 403, { error: "Forbidden" });
+  }
+  const publicPath = ["index.html", "README.md", "LICENSE"].includes(relative)
+    || ["src", "styles", "docs", "previews"].includes(parts[0])
+    || ["config/app.config.json", "config/app.config.example.json"].includes(relative)
+    || linkedSample;
+  const configuredContent = !publicPath && canReadPrivate(request, url) && await isConfiguredContentPath(relative);
+  if (!publicPath && !configuredContent) return sendJson(response, 403, { error: "Forbidden" });
+  if ((linkedSample || configuredContent || relative === "config/app.config.json") && !canReadPrivate(request, url)) {
+    return sendJson(response, 403, { error: "Forbidden" });
+  }
   if (relative === "local-default/content/imported/manifest.json") {
     await refreshLocalSamples();
   }
@@ -144,16 +164,66 @@ async function serveStatic(request, response, url) {
     const info = await stat(filePath);
     const target = info.isDirectory() ? join(filePath, "index.html") : filePath;
     const targetInfo = info.isDirectory() ? await stat(target) : info;
+    const realRoot = await realpath(PROJECT_ROOT);
+    const realTarget = await realpath(target);
+    if (!targetInfo.isFile() || (!linkedSample && (!isInside(realRoot, realTarget)
+      || isProtectedStaticPath(relativePath(realRoot, realTarget))))) {
+      return sendJson(response, 403, { error: "Forbidden" });
+    }
     response.statusCode = 200;
     response.setHeader("Content-Type", getContentType(target));
     response.setHeader("Content-Length", targetInfo.size);
     response.setHeader("Cache-Control", "no-store");
     if (request.method === "HEAD") return response.end();
-    createReadStream(target).pipe(response);
+    createReadStream(target).on("error", error => response.destroy(error)).pipe(response);
   } catch (error) {
     if (error.code === "ENOENT") return sendJson(response, 404, { error: "Not found" });
     throw error;
   }
+}
+
+function isProtectedStaticPath(path) {
+  const normalizedPath = path.replace(/\\/g, "/").toLowerCase();
+  const parts = normalizedPath.split("/");
+  return parts.some(part => part.startsWith("."))
+    || ["internal", "node_modules", "tests", "demo"].includes(parts[0])
+    || ["package.json", "package-lock.json", "agents.md"].includes(normalizedPath)
+    || normalizedPath === "local-default/study-data" || normalizedPath.startsWith("local-default/study-data/")
+    || isInside(DATA_ROOT.toLowerCase(), resolve(PROJECT_ROOT, path).toLowerCase());
+}
+
+function configuredContentPath(value) {
+  try {
+    const raw = typeof value === "string" ? value : value?.path;
+    if (typeof raw !== "string" || !raw.trim()) return "";
+    const url = new URL(raw, "http://local.invalid/");
+    if (url.origin !== "http://local.invalid") return "";
+    const path = decodeURIComponent(url.pathname).replace(/^\/+/, "") || "/";
+    return path && !isProtectedStaticPath(path) ? path : "";
+  } catch { return ""; }
+}
+
+async function isConfiguredContentPath(path) {
+  const sources = [...runtimeConfig.defaultSources, ...runtimeConfig.otherSources, ...runtimeConfig.documentSources];
+  for (const source of sources) {
+    const configured = configuredContentPath(source);
+    if (!configured) continue;
+    if (SUPPORTED_FILE_RE.test(configured) && path === configured) return true;
+    const directory = configured.endsWith("/");
+    const prefix = configured === "/" ? "" : configured;
+    const manifest = directory ? `${prefix}${MANIFEST_FILE_NAME}` : /\.json$/i.test(configured) ? configured : "";
+    if (!manifest) continue;
+    if (path === manifest || directory && path.startsWith(prefix) && SUPPORTED_FILE_RE.test(path)) return true;
+    if (!SUPPORTED_FILE_RE.test(path)) continue;
+    try {
+      const root = await realpath(PROJECT_ROOT);
+      const target = await realpath(resolve(PROJECT_ROOT, manifest));
+      if (!isInside(root, target) || isProtectedStaticPath(relativePath(root, target))) continue;
+      const content = JSON.parse(await readFile(target, "utf8"));
+      if (Array.isArray(content.files) && content.files.some(file => configuredContentPath(file) === path)) return true;
+    } catch { /* Missing manifests do not grant access. */ }
+  }
+  return false;
 }
 
 function resolveStudyPaths(source) {
@@ -193,6 +263,14 @@ function hasSameOrigin(request) {
   } catch {
     return false;
   }
+}
+
+function canReadPrivate(request, url) {
+  if (canWrite(request)) return true;
+  const cookie = String(request.headers.cookie || "").split(";").map(value => value.trim())
+    .find(value => value.startsWith("lang-reader-local="))?.slice("lang-reader-local=".length);
+  return Boolean(options.allowLan && options.token
+    && (cookie === encodeURIComponent(options.token) || url.searchParams.get("studyToken") === options.token));
 }
 
 async function readRequestBody(request, limit) {
@@ -242,7 +320,8 @@ async function refreshLocalSamples() {
   if (now - lastSampleRefresh < 750) return;
   sampleRefreshPromise = execFileAsync(
     process.execPath,
-    [resolve(PROJECT_ROOT, "local-runtime/build-local-samples.js")]
+    [resolve(PROJECT_ROOT, "local-runtime/build-local-samples.js")],
+    { cwd: PROJECT_ROOT }
   )
     .catch((error) => {
       console.warn("Local sample refresh failed:", error.message);

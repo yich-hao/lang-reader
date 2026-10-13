@@ -138,12 +138,15 @@ export function createViewEffects({ state, document, elements, getColumnCount, g
   function scrollActiveRowIntoView() {
     const wrap = elements.parsedTableWrap;
     if (state.parsedViewMode === "reader") {
-      const unit = document.querySelector(
+      const cursor = state.playbackSession?.anchor || state.activeUnitCursor;
+      const scope = cursor && `.reader-unit[data-item-index="${cursor.rowIndex}"][data-column-index="${cursor.columnIndex}"][data-sentence-index="${cursor.sentenceIndex}"]`;
+      const unit = (scope && document.querySelector(`${scope}[data-word-index="${cursor.wordIndex}"]`))
+        || (scope && document.querySelector(scope)) || document.querySelector(".reader-unit.active-reader-unit") || document.querySelector(
         `.reader-unit[data-item-index="${state.activeItemIndex}"][data-column-index="${state.activeColumnIndex}"]`
       ) || document.querySelector(`.reader-unit[data-item-index="${state.activeItemIndex}"]`);
       if (!wrap || !unit) return;
       const wrapRect = wrap.getBoundingClientRect();
-      const unitRect = unit.getBoundingClientRect();
+      const unitRect = unit.getClientRects?.()[0] || unit.getBoundingClientRect();
       const top = unitRect.top - wrapRect.top + wrap.scrollTop;
       const bottom = unitRect.bottom - wrapRect.top + wrap.scrollTop;
       const viewportTop = wrap.scrollTop;

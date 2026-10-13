@@ -4,6 +4,7 @@ import {
   flattenStudyCards,
   getStudyStats,
   getStudyStatsForCards,
+  hashStudySource,
   listStudySections,
   reconcileStudyDocument,
   resetStudyProgress
@@ -138,7 +139,9 @@ export function createStudyController({
     syncUi();
     stopSpeech();
     try {
-      const previousDocument = await repository.load(requestedSource);
+      const fileHash = await hashStudySource(context.rawText);
+      if (!isEntryCurrent(requestId, requestedSource)) return;
+      const previousDocument = await repository.load(requestedSource, { legacySource: context.legacySource, fileHash });
       if (!isEntryCurrent(requestId, requestedSource)) return;
       const result = await createStudyDocument({
         items: context.items,
@@ -366,7 +369,6 @@ export function createStudyController({
       : "";
     elements.progressActions.hidden = true;
     syncStudyHomeButton();
-    elements.tableToolbar.hidden = active;
     elements.progressImportButton.title = t("importProgress");
     elements.progressImportButton.setAttribute("aria-label", t("importProgress"));
     elements.progressExportButton.title = t("exportProgress");
@@ -421,6 +423,9 @@ export function createStudyController({
     if (!active) return false;
     const target = event.target;
     if (target?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName)) return true;
+    if (["Enter", " "].includes(event.key)
+      && (target?.tagName === "BUTTON" || target?.tagName === "A"
+        || target?.closest?.("button, a[href], [role='button'], [role='checkbox']"))) return true;
     if (event.key === "Escape") {
       event.preventDefault();
       if (session) {
@@ -467,19 +472,23 @@ export function createStudyController({
   async function importProgress() {
     const file = elements.importInput.files?.[0];
     if (!file || !document) return;
+    const importSource = source;
+    const importDocument = document;
+    const importGeneration = entryRequestId;
     try {
       const imported = await importStudyDocument(file);
+      if (!active || entryRequestId !== importGeneration || source !== importSource || document !== importDocument) return;
       document = reconcileStudyDocument(document, imported);
-      repository.save(source, document);
+      repository.save(source, document, { replaceProgress: true });
       session = null;
       selectedCards = new Set();
       setupStep = 1;
       render();
     } catch (error) {
-      setStatus(t("studyImportFailed"));
+      if (active && entryRequestId === importGeneration && source === importSource) setStatus(t("studyImportFailed"));
       window.console.warn("Study import failed:", error);
     } finally {
-      elements.importInput.value = "";
+      if (elements.importInput.files?.[0] === file) elements.importInput.value = "";
     }
   }
 
@@ -520,7 +529,7 @@ export function createStudyController({
   }
 
   function exportProgress() {
-    if (document) exportStudyDocument(document, getStudyExportName(source));
+    if (document) exportStudyDocument(document, getStudyExportName(getContext().sourceName || source));
   }
 
   function getSectionOptions() {
@@ -618,7 +627,6 @@ export function createStudyController({
       start: t("startSession"),
       next: t("next"),
       back: t("previous"),
-      step: (...args) => t("studyStep", ...args),
       skipped: (...args) => t("studySkipped", ...args),
       fuzzyDictation: t("fuzzyDictation"),
       correctFuzzy: t("correctFuzzy"),

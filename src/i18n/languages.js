@@ -58,7 +58,8 @@ export function voiceMatchesLanguage(voice, language) {
   if (!requested || !available) return false;
   const target = new Intl.Locale(requested);
   const candidate = new Intl.Locale(available);
-  if (target.language !== candidate.language) return false;
+  const groupedNorwegian = target.language === "no" && ["nb", "nn"].includes(candidate.language);
+  if (target.language !== candidate.language && !groupedNorwegian) return false;
   if (!target.script && !target.region) return true;
   const expandedTarget = target.maximize();
   const expandedVoice = candidate.maximize();
@@ -78,7 +79,7 @@ function displayLanguageName(tag, ui) {
 }
 
 export function speechLangFor(language) {
-  return getLanguage(language).tts;
+  return canonicalLanguageTag(language) || getLanguage(language).tts;
 }
 
 export function htmlLangFor(language) {

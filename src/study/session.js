@@ -2,6 +2,7 @@ import { flattenStudyCardsForScopes, normalizeProgressTuple, updateStudyProgress
 import { canonicalLanguageTag, splitGraphemes } from "../i18n/languages.js";
 
 export const STUDY_ORDERS = ["sequential", "random", "mistakes"];
+export const MAX_STUDY_ANSWER_LENGTH = 10000;
 export function createStudySession({
   document,
   mode = "learn",
@@ -70,19 +71,21 @@ export function checkStudyAnswer(session, answer, options = {}) {
     return { correct: false, expected: "", fuzzy: false, severity: "wrong", errorRatio: 1 };
   }
   const expected = current.card.vocab;
+  const tooLong = String(answer || "").length > MAX_STUDY_ANSWER_LENGTH || expected.length > MAX_STUDY_ANSWER_LENGTH;
+  answer = String(answer || "").slice(0, MAX_STUDY_ANSWER_LENGTH);
   const literalUser = normalizeLiteralAnswer(answer);
-  const literalExpected = normalizeLiteralAnswer(expected);
+  const literalExpected = normalizeLiteralAnswer(expected.slice(0, MAX_STUDY_ANSWER_LENGTH));
   const normUser = normalizeAnswer(answer, session.language);
-  const normExpected = normalizeAnswer(expected, session.language);
-  const exactMatch = literalUser === literalExpected;
-  const fuzzyEnabled = Boolean(options.fuzzyDictation ?? session?.fuzzyDictation ?? true);
+  const normExpected = normalizeAnswer(expected.slice(0, MAX_STUDY_ANSWER_LENGTH), session.language);
+  const exactMatch = !tooLong && literalUser === literalExpected;
+  const fuzzyEnabled = !tooLong && Boolean(options.fuzzyDictation ?? session?.fuzzyDictation ?? true);
   const fuzzyMatch = !exactMatch && fuzzyEnabled && isFuzzyEquivalent(normUser, normExpected, session.language);
 
   const correct = exactMatch || fuzzyMatch;
   const fuzzyUser = normalizeFuzzy(normUser, session.language);
   const fuzzyExpected = normalizeFuzzy(normExpected, session.language);
-  const distance = levenshteinDistance(fuzzyUser, fuzzyExpected);
-  const errorRatio = distance / Math.max(
+  const distance = tooLong ? 0 : levenshteinDistance(fuzzyUser, fuzzyExpected);
+  const errorRatio = tooLong ? 1 : distance / Math.max(
     splitGraphemes(fuzzyUser).length,
     splitGraphemes(fuzzyExpected).length,
     1

@@ -156,7 +156,7 @@ function analyzeVocabularyEntry(line) {
 
 function hasBracketTranslationSyntax(value) {
   const source = String(value || "");
-  const openIndex = source.indexOf("[");
+  const openIndex = findTranslationBracket(source);
   if (openIndex < 0 || source[openIndex - 1] === "!") return false;
   const closeIndex = source.indexOf("]", openIndex + 1);
   return closeIndex < 0 || source[closeIndex + 1] !== "(";
@@ -169,29 +169,22 @@ function looksLikeVocabularyHead(value) {
   return words.length > 0 && words.length <= 8;
 }
 
+function tableContentLines(lines) {
+  let inFence = false;
+  return lines.filter(line => {
+    if (/^```/.test(line)) { inFence = !inFence; return false; }
+    const separator = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line);
+    return !inFence && (separator || !isVocabularyContextLine(line));
+  });
+}
+
 function looksLikeMarkdownTable(lines) {
+  lines = tableContentLines(lines);
   return lines.some((line) => line.includes("|")) && lines.some((line) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line));
 }
 
 function parseMarkdownTable(lines, partLanguages, partRoles, targetLanguage, translationLanguage) {
-  const tableLines = lines.filter((line) => line.includes("|") && !/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line));
-  if (tableLines.length < 2) return parseVocabularyLines(lines, partLanguages, partRoles, targetLanguage, translationLanguage);
-
-  const rows = tableLines.map(splitMarkdownRow);
-  const headers = rows[0].map((cell) => cell.toLowerCase());
-  const targetIndex = findDeutschColumn(headers);
-  const translationIndex = findTranslationColumn(headers, targetIndex);
-
-  return rows.slice(1).map((cells, index) => createItem({
-    id: `table-${index + 1}`,
-    sourceType: "markdown-table",
-    parts: cells,
-    partLabels: rows[0],
-    partLanguages: cells.map((_, cellIndex) => cellIndex === targetIndex ? targetLanguage : cellIndex === translationIndex ? translationLanguage : "skip"),
-    partRoles: cells.map((_, cellIndex) => cellIndex === targetIndex ? "word" : cellIndex === translationIndex ? "translation" : partRoles[cellIndex] || "skip"),
-    raw: cells.join(" | "),
-    targetLanguage
-  })).filter((item) => item.targetText);
+  return parseTableWithContext(lines, splitMarkdownRow, "markdown-table", partRoles, targetLanguage, translationLanguage);
 }
 
 function splitMarkdownRow(line) {
@@ -199,11 +192,12 @@ function splitMarkdownRow(line) {
 }
 
 function looksLikeTsv(lines) {
+  lines = tableContentLines(lines);
   return lines.filter((line) => line.includes("\t")).length >= 2;
 }
 
 function looksLikeCsv(lines) {
-  const rows = lines.slice(0, 5).map(splitCsvRow);
+  const rows = tableContentLines(lines).slice(0, 5).map(splitCsvRow);
   const firstTableRows = rows.slice(0, 2);
   return firstTableRows.length === 2
     && firstTableRows.every((row) => row.length >= 2)
@@ -238,24 +232,47 @@ function splitCsvRow(line) {
 }
 
 function parseDelimitedTable(lines, splitRow, sourceType, partLanguages, partRoles, targetLanguage, translationLanguage) {
-  const rows = lines.map((line) => splitRow(line).map((cell) => cell.trim())).filter((row) => row.some(Boolean));
-  const firstRow = rows[0].map((cell) => cell.toLowerCase());
-  const hasHeader = firstRow.some((cell) => ["deutsch", "german", "translation", "english", "中文"].includes(cell));
-  const headers = hasHeader ? firstRow : [];
-  const startIndex = hasHeader ? 1 : 0;
-  const targetIndex = headers.length ? findDeutschColumn(headers) : 0;
-  const translationIndex = headers.length ? findTranslationColumn(headers, targetIndex) : 1;
+  return parseTableWithContext(lines, splitRow, sourceType, partRoles, targetLanguage, translationLanguage);
+}
 
-  return rows.slice(startIndex).map((cells, index) => createItem({
-    id: `table-${index + 1}`,
-    sourceType,
-    parts: cells,
-    partLabels: hasHeader ? rows[0] : [],
-    partLanguages: cells.map((_, cellIndex) => cellIndex === targetIndex ? targetLanguage : cellIndex === translationIndex ? translationLanguage : "skip"),
-    partRoles: cells.map((_, cellIndex) => cellIndex === targetIndex ? "word" : cellIndex === translationIndex ? "translation" : partRoles[cellIndex] || "skip"),
-    raw: cells.join(" | "),
-    targetLanguage
-  })).filter((item) => item.targetText);
+function parseTableWithContext(lines, splitRow, sourceType, partRoles, targetLanguage, translationLanguage) {
+  const items = [];
+  let labels = [], targetIndex = 0, translationIndex = 1, firstRow = true;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^```/.test(line)) {
+      const block = readFencedTextBlock(lines, index);
+      if (block.text) items.push(createInstructionItem(`instruction-${items.length + 1}`, block.text, block.raw));
+      index = block.nextIndex;
+      continue;
+    }
+    const heading = parseMarkdownHeading(line);
+    if (heading) {
+      items.push(createSectionItem(`section-${items.length + 1}`, heading.text, line, targetLanguage));
+      continue;
+    }
+    if (shouldSkipLine(line) || /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line)) continue;
+    const cells = splitRow(line).map(cell => cell.trim());
+    if (!cells.some(Boolean)) continue;
+    if (firstRow) {
+      firstRow = false;
+      const headers = cells.map(cell => cell.toLowerCase());
+      if (sourceType === "markdown-table" || headers.some(cell => ["deutsch", "german", "translation", "english", "中文"].includes(cell))) {
+        labels = cells;
+        targetIndex = findDeutschColumn(headers);
+        translationIndex = findTranslationColumn(headers, targetIndex);
+        continue;
+      }
+    }
+    const item = createItem({
+      id: `table-${items.length + 1}`, sourceType, parts: cells, partLabels: labels,
+      partLanguages: cells.map((_, column) => column === targetIndex ? targetLanguage : column === translationIndex ? translationLanguage : "skip"),
+      partRoles: cells.map((_, column) => column === targetIndex ? "word" : column === translationIndex ? "translation" : partRoles[column] || "skip"),
+      raw: cells.join(" | "), targetLanguage
+    });
+    if (item.targetText) items.push(item);
+  }
+  return items;
 }
 
 function findDeutschColumn(headers) {
@@ -478,16 +495,17 @@ function createItem({ id, sourceType, parts, partLanguages, partRoles, partLabel
     warning: partWarnings[index] || ""
   }));
 
-  const playableParts = normalizedParts.filter((part) => part.text && !["mute", "hide", "translationMute", "instruction"].includes(part.role));
-  const translationParts = normalizedParts.filter((part) => part.text && (part.role === "translation" || part.role === "translationMute"));
+  return refreshItemMetadata({ id, sourceType, parts: normalizedParts, raw });
+}
+
+export function refreshItemMetadata(item) {
+  const playableParts = item.parts.filter((part) => part.text && !["mute", "hide", "translationMute", "instruction"].includes(part.role));
+  const translationParts = item.parts.filter((part) => part.text && (part.role === "translation" || part.role === "translationMute"));
   const wordParts = playableParts.filter((part) => part.role === "word");
   const sentenceParts = playableParts.filter((part) => part.role === "sentence" || part.role === "translation");
   const targetText = playableParts.map((part) => part.text).join(" ");
 
-  return {
-    id,
-    sourceType,
-    parts: normalizedParts,
+  return Object.assign(item, {
     targetText,
     playableParts,
     translationText: translationParts.map((part) => part.text).join(" / "),
@@ -495,8 +513,7 @@ function createItem({ id, sourceType, parts, partLanguages, partRoles, partLabel
       ? sentenceParts.flatMap((part) => splitSentences(part.text, { collapseNewlines: true }))
       : splitSentences(targetText, { collapseNewlines: true }),
     words: wordParts.length ? wordParts.flatMap((part) => splitWords(part.text)) : splitWords(targetText),
-    raw
-  };
+  });
 }
 
 function createSectionItem(id, text, raw, targetLanguage = "de") {
@@ -532,9 +549,21 @@ function parseMarkdownHeading(line) {
   };
 }
 
+function findTranslationBracket(source) {
+  let openIndex = source.indexOf("[");
+  while (openIndex >= 0) {
+    const close = source.indexOf("]", openIndex + 1);
+    if (close < 0 || source[close + 1] !== "(") break;
+    const linkEnd = source.indexOf(")", close + 2);
+    if (linkEnd < 0) break;
+    openIndex = source.indexOf("[", linkEnd + 1);
+  }
+  return openIndex;
+}
+
 function extractBracketTranslation(line) {
   const source = String(line || "").trim();
-  const openIndex = source.indexOf("[");
+  const openIndex = findTranslationBracket(source);
   if (openIndex < 0) return { text: source, translation: "", warning: "" };
   const closeIndex = source.indexOf("]", openIndex + 1);
   if (closeIndex < 0) {

@@ -12,17 +12,17 @@ export function createDocumentLoader({
     return generation;
   }
 
-  async function loadSourcePath(sourcePath) {
+  async function loadSourcePath(sourcePath, { sourceMode } = {}) {
     const loadId = invalidate();
     if (typeof sourcePath === "string" && sourcePath.startsWith("draft:")) {
       const draft = getDraft(sourcePath.substring(6));
       if (!draft) return false;
-      commitSource({ key: sourcePath, name: draft.name, text: draft.content, draft: true });
+      commitSource({ key: sourcePath, name: draft.name, text: draft.content, draft: true, ...(sourceMode ? { sourceMode } : {}) });
       return true;
     }
     const name = sourcePath.substring(sourcePath.lastIndexOf("/") + 1);
     if (getProtocol() === "file:") {
-      commitSource({ key: sourcePath, name, text: SAMPLE_TEXT });
+      commitSource({ key: sourcePath, name, text: SAMPLE_TEXT, ...(sourceMode ? { sourceMode } : {}) });
       return true;
     }
     onLoading();
@@ -34,7 +34,7 @@ export function createDocumentLoader({
         try {
           const text = await readText(url.href);
           if (loadId !== generation) return false;
-          commitSource({ key: sourcePath, name, text });
+          commitSource({ key: sourcePath, name, text, ...(sourceMode ? { sourceMode } : {}) });
           return true;
         } catch (error) {
           lastError = `${url.pathname}: ${error.message || error}`;
@@ -51,14 +51,14 @@ export function createDocumentLoader({
     }
   }
 
-  async function loadFileObject(file, sourceKey = "", displayName = "") {
+  async function loadFileObject(file, sourceKey = "", displayName = "", { sourceMode } = {}) {
     const loadId = invalidate();
     try {
       const text = await file.text();
       if (loadId !== generation) return false;
       commitSource({
         key: sourceKey || `local-file:${file.name}:${file.size}:${file.lastModified}`,
-        editKey: sourceKey, name: displayName || file.name, text, file: true
+        editKey: sourceKey, name: displayName || file.name, text, file: true, ...(sourceMode ? { sourceMode } : {})
       });
       return true;
     } catch (error) {

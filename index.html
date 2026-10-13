@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="./styles/main.css?v=20261009-translation-restore-2" />
     <link rel="stylesheet" href="./styles/filesLens.css" />
     <link rel="stylesheet" href="./styles/filesTree.css" />
+    <link rel="stylesheet" href="./styles/languageList.css" />
     <link rel="stylesheet" href="./styles/workspaceLayout.css" />
     <link rel="stylesheet" href="./styles/notice.css" />
     <link rel="stylesheet" href="./styles/tooltips.css" />
@@ -224,10 +225,6 @@ Source: 01_lecture.pdf, Note.md
           </section>
 
           <section id="parsedView" class="parsed-view" hidden>
-            <div id="tableToolbar" class="table-toolbar">
-              <span id="countText">0 items</span>
-              <span id="positionText">0 / 0</span>
-            </div>
             <div id="parsedTableWrap" class="parsed-table-wrap" role="group" tabindex="-1" aria-label="Parsed content" data-i18n-aria-label="parsedContent"></div>
           </section>
           <input id="studyImportInput" type="file" accept=".json,application/json" hidden />
@@ -287,14 +284,18 @@ Source: 01_lecture.pdf, Note.md
               </button>
             </div>
             <span id="studyEntryMeta" hidden></span>
-            <label>
+            <label class="parse-language-row">
               <span data-i18n="targetLanguage">Target language</span>
               <span class="settings-select-surface"><select id="targetLanguageSelect"></select></span>
             </label>
-            <label id="translationLanguageLabel">
+            <label id="translationLanguageLabel" class="parse-language-row">
               <span data-i18n="translationLanguage">Translation language</span>
               <span class="settings-select-surface"><select id="translationLanguageSelect"></select></span>
             </label>
+            <div class="language-entry">
+              <span data-i18n="languageList">Language filter</span>
+              <button id="languageListButton" class="language-codes" type="button" aria-haspopup="dialog" aria-controls="languageDialog" data-i18n-aria-label="languageList"></button>
+            </div>
             <label id="hideTranslationsLabel" class="checkbox-label" style="display: none !important;">
               <input id="showTranslationsInput" type="checkbox" />
               <span data-i18n="hideTranslations">Hide translations</span>
@@ -371,20 +372,20 @@ Source: 01_lecture.pdf, Note.md
               <div class="settings-playback-slider settings-gap-slider">
                 <span class="settings-slider-pair">
                   <span class="settings-slider-label" data-i18n-title="gap">GAP</span>
-                  <span class="settings-slider-value"><span class="slider-value settings-value-reserve" aria-hidden="true">0.75s</span><span id="gapValue" class="slider-value">0.75s</span></span>
+                  <span class="settings-slider-value"><span class="slider-value settings-value-reserve" aria-hidden="true">0.75s</span><span id="gapValue" class="slider-value">0.3s</span></span>
                 </span>
-                <input id="gapInput" type="hidden" value="0.75" />
-                <div class="continuous-slider-wrapper"><div class="slider-r1"><input id="gapSlider" type="range" min="0" max="32" step="1" value="2" aria-valuetext="0.75s" data-i18n-aria-label="gap" /></div></div>
+                <input id="gapInput" type="hidden" value="0.3" />
+                <div class="continuous-slider-wrapper"><div class="slider-r1"><input id="gapSlider" type="range" min="0" max="43" step="1" value="3" aria-valuetext="0.3s" data-i18n-aria-label="gap" /></div></div>
               </div>
             </div>
             <div class="demo-item hidden-setting">
               <div class="slider-header">
                 <span class="slider-title" data-i18n="partGap">Next range gap</span>
-                <span id="partGapValue" class="slider-value">0.75s</span>
+                <span id="partGapValue" class="slider-value">0.3s</span>
               </div>
               <div class="continuous-slider-wrapper">
                 <div class="slider-r1">
-                  <input id="partGapInput" type="range" min="0.25" max="30" step="0.25" value="0.75" />
+                  <input id="partGapInput" type="range" min="0" max="30" step="0.1" value="0.3" />
                 </div>
               </div>
             </div>
@@ -486,6 +487,7 @@ Source: 01_lecture.pdf, Note.md
               <li><span class="shortcut-combo"><span class="key">W</span><span class="shortcut-separator">/</span><span class="key">S</span></span><span data-i18n="shortcutModeSwitch">Switch to Word / Sentence mode</span></li>
               <li><span class="shortcut-combo"><span class="key">Alt / ⌥ Option</span></span><span data-i18n="shortcutTemporaryWord">Hold for temporary Word mode</span></li>
               <li><span class="shortcut-combo"><span class="key">T</span></span><span data-i18n="shortcutTranslate">Translate current unit</span></li>
+              <li><span class="shortcut-combo"><span class="key">F</span></span><span data-i18n="shortcutPanels">Switch Settings / Files (reading view)</span></li>
             </ul>
           </section>
           <section class="shortcuts-group" aria-labelledby="shortcutsStudyTitle">
@@ -500,6 +502,27 @@ Source: 01_lecture.pdf, Note.md
       </div>
     </div>
 
+  <div id="languageModal" class="modal-overlay" hidden>
+  <div id="languageDialog" class="modal-content language-dialog is-icon-focus is-minus is-hover-actions" role="dialog" aria-modal="true" aria-labelledby="languageTitle" tabindex="-1">
+    <header class="language-heading"><h2 id="languageTitle" data-i18n="languageList">Language filter</h2>
+      <button id="closeLanguages" class="study-heading-home" type="button" aria-label="Close language filter" data-i18n-aria-label="closeLanguageList"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round" aria-hidden="true"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
+    </header>
+    <div class="language-tools">
+      <input id="languageSearch" type="search" role="combobox" aria-label="Search languages" placeholder="Search…" data-i18n-aria-label="languageSearch" data-i18n-placeholder="languageSearch" aria-controls="languageResults" aria-expanded="true" aria-autocomplete="list" autocomplete="off" autofocus>
+    </div>
+    <div id="languageBody" class="language-columns">
+      <section class="language-pane available-pane" aria-labelledby="availableTitle">
+        <div class="pane-heading"><h3 id="availableTitle" data-i18n="availableLanguages">Available</h3><button id="addAll" class="bulk-action add-language" type="button" aria-label="Add all languages" data-i18n-aria-label="addAllLanguages"></button></div>
+        <div id="languageResults" class="language-scroll app-files-tree app-files-tree-scroll folder-gray-icon" role="listbox" aria-label="Available languages"></div>
+      </section>
+      <section class="language-pane selected-pane" aria-labelledby="selectedTitle">
+        <div class="pane-heading"><h3 id="selectedTitle" data-i18n="selectedLanguages">Selected</h3><button id="restoreDefault" class="default-action" type="button" data-i18n="defaultLanguages">Default</button><button id="removeAll" class="bulk-action remove-language" type="button" aria-label="Remove all languages" data-i18n-aria-label="removeAllLanguages"></button></div>
+        <div id="selectedLanguages" class="language-scroll app-files-tree app-files-tree-scroll folder-gray-icon" role="list" aria-label="Selected languages in menu order"></div>
+      </section>
+    </div>
+    <span id="languageStatus" class="sr-status" role="status" aria-live="polite"></span>
+  </div>
+  </div>
     <script type="module" src="./src/app.js?v=20261009-translation-restore-2"></script>
   </body>
 </html>

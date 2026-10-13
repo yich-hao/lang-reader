@@ -1,6 +1,6 @@
 import { normalizeDocumentLanguage } from "../i18n/languages.js";
 import { REPEAT_INFINITY_VALUE } from "../core/config.js";
-import { GAP_SECONDS } from "../playback/playbackGap.js";
+import { GAP_SECONDS, normalizeGapSeconds } from "../playback/playbackGap.js";
 
 export function stripFrontMatterComment(value) {
   return String(value || "").replace(/\s+#.*$/, "");
@@ -40,7 +40,9 @@ export function parseDocumentOptions(text) {
       if (["infinite", "infinity", "∞"].includes(lower)) options.repeat = REPEAT_INFINITY_VALUE;
       else if (value && Number.isInteger(count) && count >= 1 && count < REPEAT_INFINITY_VALUE) options.repeat = count;
     }
-    if (key === "unitgap" && value && GAP_SECONDS.includes(Number(value))) options.gap = Number(value);
+    if (key === "unitgap" && value && (GAP_SECONDS.includes(Number(value)) || [0.25, 0.75].includes(Number(value)))) {
+      options.gap = normalizeGapSeconds(value);
+    }
     if (key === "speed") {
       const number = Number(value);
       const min = 0.5;

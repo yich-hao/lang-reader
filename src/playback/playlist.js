@@ -1,12 +1,13 @@
 import { splitSentences, splitWordTokens } from "../parsing/textSegmentation.js";
+import { DEFAULT_GAP_SECONDS } from "./playbackGap.js";
 
 export function createPlaylist(items = [], options = {}) {
   return {
     items,
     mode: options.mode || "word",
     repeat: Number(options.repeat || 1),
-    gapMs: Number(options.gapMs || 800),
-    partGapMs: Number(options.partGapMs || options.gapMs || 800),
+    gapMs: Number(options.gapMs ?? DEFAULT_GAP_SECONDS * 1000),
+    partGapMs: Number(options.partGapMs ?? options.gapMs ?? DEFAULT_GAP_SECONDS * 1000),
     itemIndex: 0,
     unitIndex: 0,
     repeatIndex: 0

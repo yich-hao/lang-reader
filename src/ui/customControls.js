@@ -329,7 +329,7 @@ export function initCustomSliders(root = document) {
       const rawVal = min + percentage * (max - min);
       
       const decimalPlaces = (step.toString().split('.')[1] || '').length;
-      const targetValueStr = (Math.round(rawVal / step) * step).toFixed(decimalPlaces);
+      const targetValueStr = (min + Math.round((rawVal - min) / step) * step).toFixed(decimalPlaces);
       const targetValue = parseFloat(targetValueStr);
       const currentValue = parseFloat(input.value);
       
@@ -355,6 +355,9 @@ export function initCustomSliders(root = document) {
       if (!isNearThumb) {
         e.preventDefault();
         slideToCoords(e.clientX);
+      } else if (input.animationId) {
+        cancelAnimationFrame(input.animationId);
+        input.animationId = 0;
       }
     });
   });
@@ -370,7 +373,6 @@ function animateSliderValue(input, start, target, duration) {
     cancelAnimationFrame(input.animationId);
   }
   
-  input.step = 'any';
   
   function update(now) {
     const elapsed = now - startTime;
@@ -390,6 +392,7 @@ function animateSliderValue(input, start, target, duration) {
     if (progress < 1) {
       input.animationId = requestAnimationFrame(update);
     } else {
+      input.animationId = 0;
       input.step = originalStep;
       input.value = target;
       input.dataset.lastValue = target;

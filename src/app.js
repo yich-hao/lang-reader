@@ -17,6 +17,7 @@ import { DEFAULT_APP_CONFIG, DEFAULT_DOCUMENT_PATH, DEFAULT_ROLES, DEFAULT_TARGE
 import { createViewEffects } from "./app/viewEffects.js";
 import { showSegmentRejection } from "./ui/customControls.js";
 import { createStudyController } from "./study/controller.js";
+import { studySourceIdentity } from "./study/model.js";
 import { normalizeStudySize } from "./study/session.js";
 import { createFilesTree } from "./files/filesTree.js";
 import { FILE_GROUP_APPEARANCE } from "./files/fileTreeAppearance.js";
@@ -29,6 +30,8 @@ import { createSettingsController } from "./app/settingsController.js";
 import { createWorkspaceUi } from "./app/workspaceUi.js";
 import { createTranslationUi } from "./app/translationUi.js";
 import { isValidUiLanguage } from "./i18n/languages.js";
+import { createLanguagePreferences } from "./i18n/languagePreferences.js";
+import { createLanguageListController } from "./app/languageListController.js";
 
 const showNotice = createNotice();
 const sourceWarnings = createSourceWarnings();
@@ -84,9 +87,6 @@ const elements = {
   studyImportInput: document.querySelector("#studyImportInput"),
   toggleTranslationButton: document.querySelector("#toggleTranslationButton"),
   toggleReadTranslationButton: document.querySelector("#toggleReadTranslationButton"),
-  tableToolbar: document.querySelector("#tableToolbar"),
-  countText: document.querySelector("#countText"),
-  positionText: document.querySelector("#positionText"),
   statusText: document.querySelector("#statusText"),
   uiLanguageSelect: document.querySelector("#uiLanguageSelect"),
   targetLanguageSelect: document.querySelector("#targetLanguageSelect"),
@@ -231,7 +231,13 @@ const {
   initTheme
 } = workspaceUi;
 
-const settingsController = createSettingsController({ elements, document, window, navigator, speech,
+const languagePreferences = createLanguagePreferences({
+  getVoices: () => speech.getVoices(),
+  getRetained: () => [appState.targetLanguage, appState.translationLanguage, ...appState.columnLanguages,
+    ...settingsController.getDocumentLanguages()],
+  getPreference: () => appState.saved.languageList
+});
+const settingsController = createSettingsController({ elements, document, window, navigator, speech, languagePreferences,
   setStatus: (...args) => setStatus(...args),
   showNotice: (...args) => showNotice(...args),
   parseAndShow: (...args) => parseAndShow(...args),
@@ -253,7 +259,6 @@ const settingsController = createSettingsController({ elements, document, window
   getColumnCount: (...args) => getColumnCount(...args),
   showParsed: (...args) => showParsed(...args),
   showEditor: (...args) => showEditor(...args),
-  updatePositionText: (...args) => updatePositionText(...args),
   updatePlaybackButtons: (...args) => updatePlaybackButtons(...args),
   updateTranslateLink: (...args) => updateTranslateLink(...args),
   updateThemeButtonLabel: (...args) => updateThemeButtonLabel(...args),
@@ -264,6 +269,7 @@ const settingsController = createSettingsController({ elements, document, window
   debounce: (...args) => debounce(...args),
   isFileUnexported: (...args) => isFileUnexported(...args),
   services: {
+    get languageList() { return languageList; },
     get studyController() { return studyController; },
     get filesPanel() { return filesPanel; },
     get documentRevisions() { return documentRevisions; },
@@ -331,7 +337,15 @@ const {
   updateActiveTableState, scrollActiveRowIntoView
 } = viewEffects;
 const columnControls = createColumnControls({
-  document, window, t, saveSettings, parseAndShow, cleanTag, normalizeSingleRole,
+  getLanguageOptions: () => languagePreferences.options(),
+  document, window, t, saveSettings, cleanTag, normalizeSingleRole,
+  onColumnChange: (index, change) => {
+    if (change?.tagChanged) settingsController.refreshColumnMetadata(index);
+    playbackController.handleColumnChange(index, change);
+    rerenderClickUnits();
+    syncStudyAvailability();
+    refreshVoices();
+  },
   defaultLanguageForColumn, getColumnCount, getRenderedColumnWidths, getMinColumnWidth,
   redistributeColumnWidths, applyColumnLayout, getCurrentRenderedColumnWidths,
   state: appState
@@ -339,6 +353,17 @@ const columnControls = createColumnControls({
 const {
   renderColumnControls, renderHiddenColumnButton, renderResizeHandle, closeLanguagePickers, closeTagEditors
 } = columnControls;
+const languageList = createLanguageListController({
+  document, window, preferences: languagePreferences, t,
+  getUiLanguage: () => appState.uiLanguage,
+  getPreference: () => appState.saved.languageList,
+  setPreference: value => {
+    appState.saved.languageList = value;
+    saveSettings();
+    settingsController.populateSpeechLanguageOptions();
+    closeLanguagePickers();
+  }
+});
 const { renderVocabularyView } = createVocabularyView({
   document,
   container: elements.parsedTableWrap,
@@ -362,7 +387,6 @@ const { renderVocabularyView } = createVocabularyView({
   onRendered: () => {
     updateActiveTableState();
     updateTranslationVisibility();
-    updatePositionText();
     saveSettings();
   }
 });
@@ -386,7 +410,7 @@ const {
   activateSelectionMode, activateSourceText, setActiveCursor, setKeyboardClickMode,
   applyClickModeChange, moveKeyboardSelection, cycleRepeatValue, pauseForModeChange,
   handlePlaybackButton, runPlayback, syncSpeechSettings, getSpeechOptions, playReaderTranslation,
-  stopPlayback, updatePositionText, updatePlaybackButtons, beginTemporaryWordMode, endTemporaryWordMode,
+  stopPlayback, updatePlaybackButtons, beginTemporaryWordMode, endTemporaryWordMode,
   rerenderClickUnits
 } = playbackController;
 
@@ -471,7 +495,6 @@ const studyController = createStudyController({
     headingImportButton: elements.studyHeadingImportButton,
     headingExportButton: elements.studyHeadingExportButton,
     homeButton: elements.studyHomeButton,
-    tableToolbar: elements.tableToolbar,
     parseSection: elements.parseSettingsSection,
     playbackSection: elements.playbackSettingsSection,
     speechSection: elements.speechSettingsSection,
@@ -529,7 +552,9 @@ const documentLoader = createDocumentLoader({
     new URL(`./${sourcePath}`, window.location.href),
     new URL(`/${sourcePath}`, window.location.origin)
   ],
-  commitSource: ({ key, editKey = key, name, text, draft = false, file = false }) => {
+  commitSource: ({ key, editKey = key, name, text, draft = false, file = false, sourceMode: mode }) => {
+    if (mode) sourceMode = mode;
+    activeTranslateSelection = { text: "", sourceLanguage: targetLanguage };
     elements.sourceInput.value = draft ? text : sourceTextForEditing(editKey, text);
     activeFileName = name;
     activeSourceKey = key;
@@ -559,7 +584,6 @@ const documentController = createDocumentController({ document, window, navigato
   updateParagraphOptionsVisibility: (...args) => updateParagraphOptionsVisibility(...args),
   syncStudyAvailability: (...args) => syncStudyAvailability(...args),
   setStatus: (...args) => setStatus(...args),
-  updatePositionText: (...args) => updatePositionText(...args),
   updateTranslateLink: (...args) => updateTranslateLink(...args),
   filesPanel,
   studyController,
@@ -628,10 +652,12 @@ function bindEvents() {
   playbackController.bindEvents();
   columnControls.bindEvents();
   settingsController.bindEvents();
+  languageList.bindEvents();
 
 }
 
 function parseAndShow(keepPosition = true, { animate = true } = {}) {
+  activeTranslateSelection = { text: "", sourceLanguage: targetLanguage };
   studyController.reset();
   const fileKey = getActiveFileKey();
   applyArticleSettings(fileKey);
@@ -696,13 +722,7 @@ function parseAndShow(keepPosition = true, { animate = true } = {}) {
 
 function getStudyContext() {
   const key = getActiveFileKey();
-  const source = key.startsWith("local-file:")
-    ? `imports/${getActiveFileName()}`
-    : key.startsWith("folder:")
-      ? `folders/${key.slice("folder:".length)}`
-      : key.startsWith("draft:")
-        ? `drafts/${getActiveFileName()}`
-        : key || getActiveFileName();
+  const { source, legacySource } = studySourceIdentity(key, getActiveFileName());
 
   const rawText = elements.sourceInput?.value || "";
   const parseMode = elements.parseModeSelect?.value || "vocabulary";
@@ -721,6 +741,8 @@ function getStudyContext() {
     items: eligible ? items : [],
     columnRoles: eligible ? getStudyColumnRoles(items) : [],
     source,
+    legacySource,
+    sourceName: getActiveFileName(),
     rawText,
     targetLanguage,
     translationLanguage,
@@ -762,7 +784,6 @@ function stopStudySpeech() {
 function renderParsedTable() {
   closeLanguagePickers();
   closeTagEditors();
-  elements.countText.textContent = t("itemCount", items.length);
   elements.parsedTableWrap.innerHTML = "";
   elements.parsedTableWrap.tabIndex = studyController.isActive() || !items.length ? -1 : 0;
   if (studyController.render()) return;
@@ -771,21 +792,21 @@ function renderParsedTable() {
     empty.className = "empty-state";
     empty.textContent = t("empty");
     elements.parsedTableWrap.append(empty);
-    updatePositionText();
     return;
   }
 
   if (parsedViewMode === "reader") {
     renderReaderView();
-    updatePositionText();
     saveSettings();
     return;
   }
 
   const columnCount = Math.max(...items.map((item) => item.parts.length));
   columnTags = normalizeColumnTags(columnTags, columnCount);
-  columnRoles = normalizeRoleSettings(columnRoles, DEFAULT_ROLES).slice(0, columnCount);
-  columnLanguages = normalizeLanguageSettings(columnLanguages, getDefaultColumnLanguages()).slice(0, columnCount);
+  columnRoles = normalizeRoleSettings(columnRoles,
+    Array.from({ length: columnCount }, (_, index) => DEFAULT_ROLES[index] || "sentence"));
+  columnLanguages = normalizeLanguageSettings(columnLanguages,
+    Array.from({ length: columnCount }, (_, index) => defaultLanguageForColumn(index)));
   ensureColumnSettings(columnCount);
 
   renderVocabularyView(columnCount);

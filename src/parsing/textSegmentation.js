@@ -1,3 +1,5 @@
+import { findMarkdownLinks } from "./markdownLinks.js";
+
 export function splitSentenceRanges(text, { collapseNewlines = false } = {}) {
   const source = collapseNewlines
     ? String(text || "").replace(/\n+/g, " ")
@@ -6,8 +8,10 @@ export function splitSentenceRanges(text, { collapseNewlines = false } = {}) {
   let start = 0;
   let bracketDepth = 0;
   let braceDepth = 0;
+  const links = new Map(findMarkdownLinks(source).map(link => [link.start, link]));
 
   for (let index = 0; index < source.length; index += 1) {
+    if (links.has(index)) { index = links.get(index).end - 1; continue; }
     const char = source[index];
     if (char === "[") bracketDepth += 1;
     if (char === "]" && bracketDepth > 0) bracketDepth -= 1;
@@ -57,6 +61,20 @@ const wordSegmenters = new Map();
 
 export function splitWordTokens(text, language = "en") {
   const source = String(text || "");
+  const links = findMarkdownLinks(source);
+  if (links.length) {
+    const tokens = [];
+    let cursor = 0;
+    const append = end => tokens.push(...splitWordTokens(source.slice(cursor, end), language)
+      .map(token => ({ ...token, start: token.start + cursor, end: token.end + cursor })));
+    for (const link of links) {
+      append(link.start);
+      tokens.push({ ...link, clickable: true, link: true });
+      cursor = link.end;
+    }
+    append(source.length);
+    return tokens;
+  }
   if (/^(ja|th|lo|km|my)(-|$)/i.test(language) && typeof Intl.Segmenter === "function") {
     try {
       if (!wordSegmenters.has(language)) {
@@ -108,6 +126,7 @@ function getSentenceEnd(source, index) {
 }
 
 function getAnnotationEnd(source, start) {
+  if (findMarkdownLinks(source.slice(start))[0]?.start === 0) return 0;
   const open = source[start];
   const close = open === "[" ? "]" : open === "{" ? "}" : "";
   if (!close) return 0;

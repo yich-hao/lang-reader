@@ -8,6 +8,7 @@ import { speechLangFor } from "../i18n/languages.js";
 import { REPEAT_INFINITY_VALUE } from "../core/config.js";
 
 export function createPlaybackController({ state, units, elements, document, window, speech, t, setStatus, saveSettings, parseAndShow, renderParsedTable, updateActiveTableState, scrollActiveRowIntoView, updateTranslateLink, updateTranslateLinkForCursor, showSpeechFailureNotice, syncGapInputs, updateRangeLabels, updateTranslationVisibility }) {
+  const { refreshPlaybackCell } = units;
   const { getValidClickMode, getClickUnitMode, getClickUnitModeForValue, getClickUnitLevel, getSelectionUnitMode, getRenderClickMode, getPlaybackUnitLevel, getValidPlaybackUnit, isFromHereClickMode, getEffectiveClickMode, findHorizontalKeyboardTarget, findVerticalKeyboardTarget, getKeyboardUnits, canUseKeyboardTarget, buildClickPlaybackRequest, buildButtonPlaybackRequest, buildPlaybackRequest, getAutoPlaybackRange, getPlaybackStartCursor, normalizePlaybackCursor, isRowPlayable, buildPlaybackUnits, applyPlaybackStart, getSentenceTailFromWord, getSingleUnit, getFromHereUnits, getColumnFromHereUnits, getRowUnits, getColumnUnits, getCellUnits, getReaderCellUnits, buildReaderSpeechSegments, isUnitAtOrAfterCursor, findUnitAtCursor, getSelectionCursor, getColumnCount, findFirstPlayableCell, findFirstPlayableColumn, range, forEachReaderDisplaySegment, splitDisplayWords, stripReaderTranslations, stripReaderNotes, stripReaderAnnotations, normalizeSpeechText, splitReaderSentences, splitDisplayWordTokens, splitSentenceRangesForDisplay, splitSentencesForDisplay, getSentenceIndexAtOffset } = units;
   function activateSelectionMode(mode) {
     const previousRenderMode = getRenderClickMode();
@@ -30,7 +31,6 @@ export function createPlaybackController({ state, units, elements, document, win
     state.activeItemIndex = index;
     state.activeColumnIndex = columnIndex;
     setPosition(state.playlist, index, 0);
-    updatePositionText();
     if (syncTranslateLink) updateTranslateLink(state.items[index]?.targetText || "");
     updateActiveTableState();
     if (state.isPlaying) scrollActiveRowIntoView();
@@ -144,6 +144,46 @@ export function createPlaybackController({ state, units, elements, document, win
     runPlayback(buildButtonPlaybackRequest(autoPlay));
   }
 
+  function handleColumnChange(index, { languageChanged = false } = {}) {
+    const session = state.playbackSession;
+    if (!state.isPlaying || state.parsedViewMode === "reader"
+      || session.units[session.unitIndex]?.columnIndex !== index) return;
+    const silent = ["mute", "hide"].includes(state.columnRoles[index]);
+    if (!silent && !(languageChanged && session.kind === "auto")) return;
+    session.restartCurrentCell = !silent;
+    if (!session.speaking) return;
+    session.interruptedUtteranceId ||= session.utteranceId;
+    session.utteranceId++;
+    speech.stop();
+  }
+
+  function handleAutoPlayOrderChange() {
+    const session = state.playbackSession;
+    if (!state.isPlaying || session.kind !== "auto" || state.parsedViewMode === "reader") return;
+    const range = getAutoPlaybackRange();
+    if (session.request.range === range) return;
+    session.request.range = range;
+    const current = session.currentUnitStarted
+      ? session.units[session.unitIndex]
+      : session.lastCompletedUnit || session.units[session.unitIndex];
+    if (!current) return;
+    const start = session.unitIndex + Number(Boolean(session.currentUnitStarted));
+    const pending = buildPlaybackUnits({
+      ...session.request,
+      start: { ...current, wordIndex: current.sentenceWordAnchor ?? current.wordIndex },
+      startUnitLevel: current.anchorWordIndex !== undefined || current.sentenceWordAnchor !== undefined
+        ? "word" : current.unitLevel
+    }).filter(unit => !session.completedUnitKeys.has(playbackUnitKey(unit))
+      && (!session.currentUnitStarted || playbackUnitKey(unit) !== playbackUnitKey(current)));
+    session.units.splice(start, session.units.length - start, ...pending);
+    session.queueRevision++;
+  }
+
+  function playbackUnitKey(unit) {
+    return [unit.rowIndex, unit.columnIndex, unit.unitLevel, unit.sentenceIndex,
+      unit.segmentIndex ?? unit.wordIndex].join(":");
+  }
+
   async function runPlayback(request) {
     if (!state.items.length) parseAndShow();
     if (!state.items.length) return;
@@ -152,50 +192,83 @@ export function createPlaybackController({ state, units, elements, document, win
     const units = buildPlaybackUnits(playbackRequest);
     if (!units.length) return;
     let completedUnits = 0;
-    const remainingCounts = [false, true].map(readTranslations => {
-      const counts = Array(units.length + 1).fill(0);
-      for (let index = units.length - 1; index >= 0; index--) {
-        const unit = units[index];
-        const audible = (readTranslations || !unit.skipWhenTranslationsDisabled)
-          && Boolean(normalizeSpeechText(unit.text, unit.language));
-        counts[index] = counts[index + 1] + Number(audible);
+    let previousSpokenUnit = null;
+    let elapsedGapMs = 0;
+    const isAudible = unit => (state.parsedViewMode === "reader"
+      || !["mute", "hide"].includes(state.columnRoles?.[unit.columnIndex]))
+      && (elements.readTranslationsInput.checked || !unit.skipWhenTranslationsDisabled)
+      && Boolean(normalizeSpeechText(unit.text, unit.language));
+    let remainingCounts = [], remainingCountsKey = "";
+    const requestProgress = (index, fraction = 0) => {
+      const key = `${state.playbackSession.queueRevision}:${elements.readTranslationsInput.checked}:${(state.columnRoles || []).join(",")}`;
+      if (key !== remainingCountsKey) {
+        remainingCountsKey = key;
+        const counts = Array(units.length + 1).fill(0);
+        for (let index = units.length - 1; index >= 0; index--) {
+          counts[index] = counts[index + 1] + Number(isAudible(units[index]));
+        }
+        remainingCounts = counts;
       }
-      return counts;
-    });
-    const requestProgress = (index, fraction = 0) => (completedUnits + fraction)
-      / Math.max(1, completedUnits + remainingCounts[Number(elements.readTranslationsInput.checked)][index]);
+      return (completedUnits + fraction) / Math.max(1, completedUnits + remainingCounts[index]);
+    };
     state.playbackRunId += 1;
     const runId = state.playbackRunId;
     const selectionLevel = state.activeSelectionMode === "play" ? getPlaybackUnitLevel() : getClickUnitMode();
     state.isPlaying = true;
     state.isPaused = false;
     state.activePlaybackButton = playbackRequest.kind;
-    state.playbackSession = { kind: playbackRequest.kind, request: playbackRequest, units, unitIndex: 0, selectionLevel, utteranceId: 0 };
+    state.playbackSession = { kind: playbackRequest.kind, request: playbackRequest, units, unitIndex: 0, selectionLevel,
+      utteranceId: 0, queueRevision: 0, completedUnitKeys: new Set() };
     setPlaybackProgressImmediate(0);
     updatePlaybackButtons();
     syncSpeechSettings();
     saveSettings();
+    let resolvedCell = "";
     for (let unitIndex = 0; unitIndex < units.length && state.isPlaying && runId === state.playbackRunId; unitIndex += 1) {
+      state.playbackSession.unitIndex = unitIndex;
+      state.playbackSession.currentUnitStarted = false;
+      const cell = `${units[unitIndex].rowIndex}:${units[unitIndex].columnIndex}`;
+      if (playbackRequest.kind === "auto" && state.parsedViewMode !== "reader"
+        && (cell !== resolvedCell || state.playbackSession.restartCurrentCell)) {
+        const { count, changed } = refreshPlaybackCell(units, unitIndex, Boolean(state.playbackSession.restartCurrentCell));
+        state.playbackSession.restartCurrentCell = false;
+        if (changed) state.playbackSession.queueRevision++;
+        resolvedCell = cell;
+        if (!count) { unitIndex--; continue; }
+      }
       const unit = units[unitIndex];
 
-      if (unit.skipWhenTranslationsDisabled && !elements.readTranslationsInput.checked) {
-        continue;
-      }
+      if (!isAudible(unit)) continue;
+      while (state.isPaused && state.isPlaying && runId === state.playbackRunId) await wait(80);
+      if (!state.isPlaying || runId !== state.playbackRunId) break;
+      if (unit !== units[unitIndex]) { unitIndex--; continue; }
 
-      state.playbackSession.unitIndex = unitIndex;
-      setActiveCursorFromUnit(unit);
       const speechText = normalizeSpeechText(unit.text, unit.language);
       if (!speechText) {
         continue;
       }
+      if (previousSpokenUnit) {
+        const delayMs = Math.max(0, getCompensatedGap(getBoundaryGap(previousSpokenUnit, unit), unit) - elapsedGapMs);
+        const elapsedMs = await waitForPlayback(delayMs, runId, () => unit === units[unitIndex] && isAudible(unit) && !state.playbackSession.restartCurrentCell);
+        elapsedGapMs += Number.isFinite(elapsedMs) ? elapsedMs : delayMs;
+        if (!state.isPlaying || runId !== state.playbackRunId) break;
+        if (unit !== units[unitIndex]) { unitIndex--; continue; }
+        if (state.playbackSession.restartCurrentCell) { unitIndex--; continue; }
+        if (!isAudible(unit)) continue;
+      }
       const locateSpeechCursor = createSpeechCursorResolver(unit, speechText);
+      state.playbackSession.anchor = locateSpeechCursor(0);
+      setActiveCursorFromUnit(unit);
       for (let repeatIndex = 0; shouldContinueRepeat(repeatIndex, runId); repeatIndex += 1) {
+        if (!isAudible(unit) || state.playbackSession.restartCurrentCell) break;
         state.playbackSession.anchor = locateSpeechCursor(0);
         state.playbackSession.startAnchor ||= state.playbackSession.anchor;
         const utteranceId = ++state.playbackSession.utteranceId;
         setStatus(t("playing", unit.text));
         try {
           syncSpeechSettings();
+          state.playbackSession.currentUnitStarted = true;
+          state.playbackSession.speaking = true;
           await speech.speak(speechText, {
             ...getSpeechOptions(unit.language),
             progressGranularity: playbackRequest.unitLevel === "word" ? "character" : "word",
@@ -204,9 +277,11 @@ export function createPlaybackController({ state, units, elements, document, win
                 || utteranceId !== state.playbackSession.utteranceId
                 || !Number.isInteger(charIndex) || charIndex < 0 || charIndex >= speechText.length) return;
               state.playbackSession.anchor = locateSpeechCursor(charIndex);
+              if (state.parsedViewMode === "reader") scrollActiveRowIntoView();
             },
             onProgress: fraction => {
-              if (!state.isPlaying || state.isPaused || runId !== state.playbackRunId) return;
+              if (!state.isPlaying || state.isPaused || runId !== state.playbackRunId
+                || utteranceId !== state.playbackSession.utteranceId) return;
               const repeats = getRepeatCount();
               const unitProgress = Number.isFinite(repeats) ? (repeatIndex + fraction) / repeats : fraction;
               const progress = requestProgress(unitIndex, unitProgress);
@@ -214,19 +289,42 @@ export function createPlaybackController({ state, units, elements, document, win
             }
           });
         } catch {
+          if (runId === state.playbackRunId && state.playbackSession.interruptedUtteranceId === utteranceId) break;
           if (runId === state.playbackRunId) {
             setStatus(t("speechFailed"));
             showSpeechFailureNotice();
             state.isPlaying = false;
           }
           break;
+        } finally {
+          if (runId === state.playbackRunId) state.playbackSession.speaking = false;
         }
-        if (shouldContinueRepeat(repeatIndex + 1, runId)) await waitForPlayback(getUnitGap(), runId);
+        if (!isAudible(unit)) break;
+        if (shouldContinueRepeat(repeatIndex + 1, runId)) {
+          await waitForPlayback(getCompensatedGap(getUnitGap(), unit), runId,
+            () => isAudible(unit) && !state.playbackSession.restartCurrentCell);
+        }
       }
       if (!state.isPlaying || runId !== state.playbackRunId) break;
+      if (state.playbackSession.restartCurrentCell) {
+        state.playbackSession.interruptedUtteranceId = 0;
+        previousSpokenUnit = null;
+        elapsedGapMs = 0;
+        unitIndex--;
+        continue;
+      }
+      if (!isAudible(unit) || state.playbackSession.interruptedUtteranceId) {
+        state.playbackSession.interruptedUtteranceId = 0;
+        previousSpokenUnit = null;
+        elapsedGapMs = 0;
+        continue;
+      }
       completedUnits++;
+      state.playbackSession.completedUnitKeys.add(playbackUnitKey(unit));
+      state.playbackSession.lastCompletedUnit = unit;
+      previousSpokenUnit = unit;
+      elapsedGapMs = 0;
       setPlaybackProgress(Math.max(state.playbackProgress.target, requestProgress(unitIndex + 1)));
-      if (unitIndex + 1 < units.length) await waitForPlayback(getBoundaryGap(unit, units[unitIndex + 1]), runId);
     }
     if (runId === state.playbackRunId) {
       const completedNaturally = state.isPlaying;
@@ -255,7 +353,6 @@ export function createPlaybackController({ state, units, elements, document, win
     state.activeColumnIndex = startCursor.columnIndex;
     state.activeUnitCursor = { ...startCursor };
     setPosition(state.playlist, state.activeItemIndex, 0);
-    updatePositionText();
     updateActiveTableState();
   }
 
@@ -353,6 +450,12 @@ export function createPlaybackController({ state, units, elements, document, win
     return previousUnit.partIndex !== nextUnit.partIndex ? getRangeGap() : getUnitGap();
   }
 
+  function getCompensatedGap(gapMs, nextUnit) {
+    syncSpeechSettings();
+    const startupMs = speech.getStartupDelay?.(getSpeechOptions(nextUnit.language)) || 0;
+    return Math.max(0, gapMs - startupMs);
+  }
+
   function pausePlayback() {
     if (!state.isPlaying || state.isPaused) return;
     state.isPaused = true;
@@ -394,10 +497,6 @@ export function createPlaybackController({ state, units, elements, document, win
     updatePlaybackButtons();
     speech.stop();
     if (!silent) setStatus(t("stopped"));
-  }
-
-  function updatePositionText() {
-    elements.positionText.textContent = t("position", state.activeItemIndex, state.items.length);
   }
 
   function updatePlaybackButtons() {
@@ -474,17 +573,22 @@ export function createPlaybackController({ state, units, elements, document, win
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
-  async function waitForPlayback(ms, runId) {
+  async function waitForPlayback(ms, runId, canContinue = () => true) {
     let remaining = ms;
-    while (remaining > 0 && state.isPlaying && runId === state.playbackRunId) {
+    let elapsedMs = 0;
+    while (remaining > 0 && state.isPlaying && runId === state.playbackRunId && canContinue()) {
       if (state.isPaused) {
         await wait(80);
         continue;
       }
       const chunk = Math.min(remaining, 80);
+      const startedAt = performance.now();
       await wait(chunk);
-      remaining -= chunk;
+      const elapsed = performance.now() - startedAt;
+      elapsedMs += elapsed;
+      remaining -= elapsed;
     }
+    return elapsedMs;
   }
 
   async function waitForProgressSettle(runId, timeoutMs) {
@@ -519,6 +623,7 @@ export function createPlaybackController({ state, units, elements, document, win
   }
 
   function bindEvents() {
+    elements.playModeSelect.addEventListener("change", handleAutoPlayOrderChange);
     elements.playButton.addEventListener("click", () => handlePlaybackButton(false, { source: "button" }));
     elements.autoPlayButton.addEventListener("click", () => handlePlaybackButton(true, { source: "button" }));
     elements.restartButton.addEventListener("click", restartPlayback);
@@ -526,5 +631,5 @@ export function createPlaybackController({ state, units, elements, document, win
     elements.nextButton.addEventListener("click", () => moveKeyboardSelection(1, "horizontal"));
   }
 
-  return { activateSelectionMode, activateSourceText, setActiveItem, setActiveCursor, setKeyboardClickMode, applyClickModeChange, getSentenceLocalWordCursor, moveKeyboardSelection, speakSelectedUnit, cycleRepeatValue, pauseForModeChange, handlePlaybackButton, runPlayback, resetCursorAfterPlayback, shouldContinueRepeat, syncSpeechSettings, getSpeechOptions, playReaderTranslation, setActiveCursorFromUnit, getRepeatCount, getUnitGap, getRangeGap, getBoundaryGap, pausePlayback, resumePlayback, restartPlayback, stopPlayback, updatePositionText, updatePlaybackButtons, setPlaybackProgress, setPlaybackProgressImmediate, resetPlaybackProgress, animatePlaybackProgress, applyPlaybackProgress, wait, waitForPlayback, waitForProgressSettle, beginTemporaryWordMode, endTemporaryWordMode, rerenderClickUnits, bindEvents };
+  return { activateSelectionMode, activateSourceText, setActiveItem, setActiveCursor, setKeyboardClickMode, applyClickModeChange, getSentenceLocalWordCursor, moveKeyboardSelection, speakSelectedUnit, cycleRepeatValue, pauseForModeChange, handlePlaybackButton, handleColumnChange, runPlayback, resetCursorAfterPlayback, shouldContinueRepeat, syncSpeechSettings, getSpeechOptions, playReaderTranslation, setActiveCursorFromUnit, getRepeatCount, getUnitGap, getRangeGap, getBoundaryGap, pausePlayback, resumePlayback, restartPlayback, stopPlayback, updatePlaybackButtons, setPlaybackProgress, setPlaybackProgressImmediate, resetPlaybackProgress, animatePlaybackProgress, applyPlaybackProgress, wait, waitForPlayback, waitForProgressSettle, beginTemporaryWordMode, endTemporaryWordMode, rerenderClickUnits, bindEvents };
 }

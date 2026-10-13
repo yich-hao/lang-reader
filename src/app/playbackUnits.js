@@ -1,4 +1,5 @@
 import { splitSentenceRanges, splitWordTokens } from "../parsing/textSegmentation.js";
+import { findMarkdownLinks, mapMarkdownLinks } from "../parsing/markdownLinks.js";
 import { filterSpeechText } from "../i18n/languages.js";
 import { cursorFromUnit, flattenNavigationTargets, findHorizontalTarget, findVerticalTarget } from "../ui/navigationGrid.js";
 
@@ -148,6 +149,8 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
   function buildPlaybackUnits(request) {
     const start = request.start;
     const level = request.unitLevel;
+    // Auto Play keeps silent candidates for live eligibility checks.
+    const includeSilent = request.kind === "auto";
     if (request.range === "singleText") {
       return [{
         text: request.text,
@@ -174,10 +177,10 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
         .filter((unit) => isUnitAtOrAfterCursor(unit, start, level));
       return applyPlaybackStart(units, request);
     }
-    if (request.range === "row") return getRowUnits(start.rowIndex, level).filter((unit) => isUnitAtOrAfterCursor(unit, start, level));
-    if (request.range === "column") return getColumnUnits(start.columnIndex, start.rowIndex, level).filter((unit) => isUnitAtOrAfterCursor(unit, start, level));
-    if (request.range === "columnFromHere") return applyPlaybackStart(getColumnFromHereUnits(start, level), request);
-    return applyPlaybackStart(getFromHereUnits(start, level), request);
+    if (request.range === "row") return getRowUnits(start.rowIndex, level, includeSilent).filter((unit) => isUnitAtOrAfterCursor(unit, start, level));
+    if (request.range === "column") return getColumnUnits(start.columnIndex, start.rowIndex, level, includeSilent).filter((unit) => isUnitAtOrAfterCursor(unit, start, level));
+    if (request.range === "columnFromHere") return applyPlaybackStart(getColumnFromHereUnits(start, level, includeSilent), request);
+    return applyPlaybackStart(getFromHereUnits(start, level, includeSilent), request);
   }
 
   function applyPlaybackStart(units, request) {
@@ -206,7 +209,43 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
       text: sentenceTail,
       wordIndex: start.wordIndex,
       anchorWordIndex: start.wordIndex
-    }, ...translationUnits, ...remainingUnits];
+    }, ...translationUnits.map(unit => ({ ...unit, sentenceWordAnchor: start.wordIndex })), ...remainingUnits];
+  }
+
+  function refreshPlaybackCell(queue, index, restart = false) {
+    const first = queue[index];
+    let end = index + 1;
+    while (end < queue.length && queue[end].rowIndex === first.rowIndex
+      && queue[end].columnIndex === first.columnIndex) end++;
+    let fresh = getCellUnits(first.rowIndex, first.columnIndex, first.unitLevel, true);
+    if (!restart) {
+      if (first.sentenceWordAnchor !== undefined) {
+        fresh = applyPlaybackStart(fresh, {
+          unitLevel: first.unitLevel,
+          startUnitLevel: "word",
+          start: { ...first, wordIndex: first.sentenceWordAnchor }
+        });
+      }
+      fresh = fresh.filter(unit => isUnitAtOrAfterCursor(unit, first, first.unitLevel));
+      // Speech segments are independent of source-word navigation anchors.
+      if (first.segmentIndex !== undefined && first.anchorWordIndex === undefined) {
+        fresh = fresh.filter(unit => unit.sentenceIndex > first.sentenceIndex
+          || unit.segmentIndex >= first.segmentIndex);
+      }
+      fresh = applyPlaybackStart(fresh, {
+        unitLevel: first.unitLevel,
+        startUnitLevel: first.anchorWordIndex === undefined ? first.unitLevel : "word",
+        start: first
+      });
+    }
+    const changed = fresh.length !== end - index || fresh.some((unit, offset) => {
+      const old = queue[index + offset];
+      return unit.text !== old.text || unit.language !== old.language
+        || unit.wordIndex !== old.wordIndex || unit.sentenceIndex !== old.sentenceIndex
+        || unit.isTranslation !== old.isTranslation;
+    });
+    if (changed) queue.splice(index, end - index, ...fresh);
+    return { count: fresh.length, changed };
   }
 
   function getSentenceTailFromWord(cursor) {
@@ -247,39 +286,39 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
     return selected ? [selected] : units.slice(0, 1);
   }
 
-  function getFromHereUnits(cursor, level) {
+  function getFromHereUnits(cursor, level, includeSilent = false) {
     return range(cursor.rowIndex, state.items.length).flatMap((rowIndex) => {
-      const rowUnits = getRowUnits(rowIndex, level);
+      const rowUnits = getRowUnits(rowIndex, level, includeSilent);
       return rowIndex === cursor.rowIndex ? rowUnits.filter((unit) => isUnitAtOrAfterCursor(unit, cursor, level)) : rowUnits;
     });
   }
 
-  function getColumnFromHereUnits(cursor, level) {
+  function getColumnFromHereUnits(cursor, level, includeSilent = false) {
     const columnCount = getColumnCount();
     return range(cursor.columnIndex, columnCount).flatMap((columnIndex) => {
-      const columnUnits = getColumnUnits(columnIndex, columnIndex === cursor.columnIndex ? cursor.rowIndex : 0, level);
+      const columnUnits = getColumnUnits(columnIndex, columnIndex === cursor.columnIndex ? cursor.rowIndex : 0, level, includeSilent);
       return columnIndex === cursor.columnIndex ? columnUnits.filter((unit) => isUnitAtOrAfterCursor(unit, cursor, level)) : columnUnits;
     });
   }
 
-  function getRowUnits(rowIndex, mode = "cell") {
+  function getRowUnits(rowIndex, mode = "cell", includeSilent = false) {
     const item = state.items[rowIndex];
     if (!item) return [];
-    return item.parts.flatMap((part, columnIndex) => getCellUnits(rowIndex, columnIndex, mode));
+    return item.parts.flatMap((part, columnIndex) => getCellUnits(rowIndex, columnIndex, mode, includeSilent));
   }
 
-  function getColumnUnits(columnIndex, startRowIndex = state.activeItemIndex, mode = "cell") {
-    return range(startRowIndex, state.items.length).flatMap((rowIndex) => getCellUnits(rowIndex, columnIndex, mode));
+  function getColumnUnits(columnIndex, startRowIndex = state.activeItemIndex, mode = "cell", includeSilent = false) {
+    return range(startRowIndex, state.items.length).flatMap((rowIndex) => getCellUnits(rowIndex, columnIndex, mode, includeSilent));
   }
 
-  function getCellUnits(rowIndex, columnIndex, mode) {
+  function getCellUnits(rowIndex, columnIndex, mode, includeSilent = false) {
     const item = state.items[rowIndex];
     if (item?.sourceType === "instruction") return [];
     const part = item?.parts[columnIndex];
     if (state.parsedViewMode === "reader") return getReaderCellUnits(rowIndex, columnIndex, mode);
     const role = getEffectivePartRole(part, columnIndex);
     const language = state.columnLanguages[columnIndex] || part?.language || state.targetLanguage;
-    if (!part?.text || ["mute", "hide"].includes(role)) return [];
+    if (!part?.text || (!includeSilent && ["mute", "hide"].includes(role))) return [];
     if (item.sourceType === "section") return getReaderCellUnits(rowIndex, columnIndex, mode, { language, optionalTranslations: false });
     if (mode === "word") {
       const sentences = splitSentencesForDisplay(part.text);
@@ -379,6 +418,7 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
             columnIndex,
             sentenceIndex,
             wordIndex: segmentIndex,
+            segmentIndex,
             unitLevel: "sentence",
             isTranslation: segment.isTranslation,
             skipWhenTranslationsDisabled: optionalTranslations && segment.skipWhenTranslationsDisabled
@@ -396,6 +436,7 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
       columnIndex,
       sentenceIndex: 0,
       wordIndex: segmentIndex,
+      segmentIndex,
       unitLevel: "cell",
       isTranslation: segment.isTranslation,
       skipWhenTranslationsDisabled: optionalTranslations && segment.skipWhenTranslationsDisabled
@@ -419,7 +460,7 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
         }
         return;
       }
-      const textSegment = stripReaderAnnotations(segment.text).trim();
+      const textSegment = (segment.link ? segment.text : stripReaderAnnotations(segment.text)).trim();
       if (textSegment && /\p{L}|\p{N}/u.test(textSegment)) {
         segments.push({
           text: textSegment,
@@ -484,6 +525,19 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
 
   function forEachReaderDisplaySegment(text, callback) {
     const source = String(text || "");
+    const links = findMarkdownLinks(source);
+    if (links.length) {
+      let cursor = 0;
+      const append = end => forEachReaderDisplaySegment(source.slice(cursor, end), segment =>
+        callback({ ...segment, start: segment.start + cursor, end: segment.end + cursor }));
+      for (const link of links) {
+        append(link.start);
+        callback({ ...link, link: true, translation: false });
+        cursor = link.end;
+      }
+      append(source.length);
+      return;
+    }
     let cursor = 0;
     const inlineRe = /(\[([^\]]+)\]|\{([^}]+)\})/g;
     let match;
@@ -515,17 +569,21 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
   }
 
   function splitDisplayWords(text, language = state.targetLanguage) {
-    if (/^zh(-|$)/i.test(language)) {
-      return [...text.replace(/\s+/g, "")].filter(Boolean);
-    }
     return splitDisplayWordTokens(text, language).filter(token => token.clickable).map(token => token.text);
   }
 
   function stripReaderTranslations(text) {
-    return String(text || "").replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+    let result = "";
+    forEachReaderDisplaySegment(text, segment => { result += segment.translation ? " " : segment.raw; });
+    return result.replace(/\s+/g, " ").trim();
   }
 
   function stripReaderNotes(text) {
+    if (findMarkdownLinks(text).length) {
+      let result = "";
+      forEachReaderDisplaySegment(text, segment => { result += segment.note ? " " : segment.raw; });
+      return result.replace(/\s+/g, " ").trim();
+    }
     return String(text || "").replace(/\{[^}]*\}/g, " ").replace(/\s+/g, " ").trim();
   }
 
@@ -534,7 +592,7 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
   }
 
   function normalizeSpeechText(text, language = state.targetLanguage) {
-    let source = String(text || "").trim();
+    let source = mapMarkdownLinks(text, link => link.text).trim();
     if (/^de(-|$)/i.test(language) && /^[A-Z]$/.test(source)) source = source.toLowerCase();
     return filterSpeechText(source, language);
   }
@@ -546,6 +604,14 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
 
   function splitDisplayWordTokens(text, language = state.targetLanguage) {
     const source = String(text || "");
+    if (findMarkdownLinks(source).length) {
+      return splitWordTokens(source, language).flatMap(token => {
+        if (token.link || !/^zh(-|$)/i.test(language)) return [token];
+        return splitDisplayWordTokens(token.text, language).map(part => ({
+          ...part, start: part.start + token.start, end: part.end + token.start
+        }));
+      });
+    }
     if (/^zh(-|$)/i.test(language)) {
       let offset = 0;
       return [...source].map((char) => {
@@ -580,5 +646,5 @@ export function createPlaybackUnits({ state, elements, shouldUseReaderMode, getE
     return 0;
   }
 
-  return { getValidClickMode, getClickUnitMode, getClickUnitModeForValue, getClickUnitLevel, getSelectionUnitMode, getRenderClickMode, getPlaybackUnitLevel, getValidPlaybackUnit, isFromHereClickMode, getEffectiveClickMode, findHorizontalKeyboardTarget, findVerticalKeyboardTarget, getKeyboardUnits, canUseKeyboardTarget, buildClickPlaybackRequest, buildButtonPlaybackRequest, buildPlaybackRequest, getAutoPlaybackRange, getPlaybackStartCursor, normalizePlaybackCursor, isRowPlayable, buildPlaybackUnits, applyPlaybackStart, getSentenceTailFromWord, getSingleUnit, getFromHereUnits, getColumnFromHereUnits, getRowUnits, getColumnUnits, getCellUnits, getReaderCellUnits, buildReaderSpeechSegments, isUnitAtOrAfterCursor, findUnitAtCursor, getSelectionCursor, getColumnCount, findFirstPlayableCell, findFirstPlayableColumn, range, forEachReaderDisplaySegment, splitDisplayWords, stripReaderTranslations, stripReaderNotes, stripReaderAnnotations, normalizeSpeechText, splitReaderSentences, splitDisplayWordTokens, splitSentenceRangesForDisplay, splitSentencesForDisplay, getSentenceIndexAtOffset };
+  return { getValidClickMode, getClickUnitMode, getClickUnitModeForValue, getClickUnitLevel, getSelectionUnitMode, getRenderClickMode, getPlaybackUnitLevel, getValidPlaybackUnit, isFromHereClickMode, getEffectiveClickMode, findHorizontalKeyboardTarget, findVerticalKeyboardTarget, getKeyboardUnits, canUseKeyboardTarget, buildClickPlaybackRequest, buildButtonPlaybackRequest, buildPlaybackRequest, getAutoPlaybackRange, getPlaybackStartCursor, normalizePlaybackCursor, isRowPlayable, buildPlaybackUnits, refreshPlaybackCell, applyPlaybackStart, getSentenceTailFromWord, getSingleUnit, getFromHereUnits, getColumnFromHereUnits, getRowUnits, getColumnUnits, getCellUnits, getReaderCellUnits, buildReaderSpeechSegments, isUnitAtOrAfterCursor, findUnitAtCursor, getSelectionCursor, getColumnCount, findFirstPlayableCell, findFirstPlayableColumn, range, forEachReaderDisplaySegment, splitDisplayWords, stripReaderTranslations, stripReaderNotes, stripReaderAnnotations, normalizeSpeechText, splitReaderSentences, splitDisplayWordTokens, splitSentenceRangesForDisplay, splitSentencesForDisplay, getSentenceIndexAtOffset };
 }
