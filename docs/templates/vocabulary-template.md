@@ -4,26 +4,22 @@ target: de         # language code, e.g. de/en/zh/bg/ja/fr-FR
 translation: en    # language code or mix/na (same as target)
 ---
 
-# Vokabelliste [Vocabulary List]
+# Vokabelvorlage [Vocabulary Template]
 
 ```text
 Use this template for vocabulary lists.
 
-Click Show Raw to view the Markdown source. Copy it to an AI assistant to reformat your notes.
+Click Show Raw to see the format. More actions → Create Draft Copy makes an editable copy.
 
-Columns:
-word | explanation | sentence
-
-Formats shown below:
-word [translation] -> sentence
-word [translation]
-word - translation - sentence
-word - translation
-word -> sentence
-
-Rules:
-- Use one vocabulary item per line.
-- Columns: target word or phrase, translation or explanation, optional example sentence.
+Supported formats:
+- Structure: headings (# to ######), bullet lists (-, *, +), and Markdown tables.
+- word [translation] -> sentence; word [translation]
+- word - translation - sentence; word - translation; word -> sentence
+- Separators: spaced -, –, —, =. Arrows: ->, →, =>.
+- Multiple entries on one line: word [translation]; another word [translation].
+- Tables: tab-separated (TSV) and comma-separated (CSV), in addition to Markdown.
+- Columns: word/phrase, translation/explanation, and optional example sentence.
+- Bare words can remain within a structured list; a bare-word-only list is not recognized as Vocabulary. Study needs a word and a translation.
 - Fenced text blocks like this one are visible but not read aloud.
 ```
 

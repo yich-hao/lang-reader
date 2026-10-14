@@ -14,7 +14,7 @@ export function parseInput(rawText, options = {}) {
   const paragraph = options.paragraph || {};
   if (!text.trim()) return [];
 
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lines = splitInputLines(text);
   if (parseMode === "paragraph") return parseArticle(text, partLanguages, partRoles, targetLanguage, paragraph);
 
   const vocabularyStructure = analyzeVocabularyStructure(text);
@@ -45,11 +45,22 @@ function normalizeText(text) {
     .trim();
 }
 
+function splitInputLines(text) {
+  let inFence = false;
+  return text.split("\n").map(line => line.trim()).filter(line => {
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      return true;
+    }
+    return inFence || Boolean(line);
+  });
+}
+
 export function analyzeVocabularyStructure(rawText) {
   const text = normalizeText(rawText);
   if (!text) return createVocabularyAnalysis(false, "none");
 
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lines = splitInputLines(text);
   if (looksLikeMarkdownTable(lines) && hasOnlyMarkdownTableContent(lines)) {
     return createVocabularyAnalysis(true, "markdown-table");
   }

@@ -121,7 +121,10 @@ export function documentLabelFromPath(path, label = "") {
 }
 
 function documentSortScore(path) {
-  return path === DEFAULT_DOCUMENT_PATH ? -1 : 0;
+  const fixedOrder = [DEFAULT_DOCUMENT_PATH, "docs/templates/reader-template.md",
+    "docs/templates/vocabulary-template.md", "docs/templates/reformat-notes.md"];
+  const index = fixedOrder.indexOf(String(path).replace(/^\.\//, ""));
+  return index < 0 ? fixedOrder.length : index;
 }
 
 function dedupeSamples(samples) {
